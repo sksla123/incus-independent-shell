@@ -1,7 +1,0 @@
-#!/usr/bin/python3
-import sys
-
-sys.path.insert(0, '/usr/local/lib/incus-only-shell')
-from incus_only_shell.shell import main
-
-raise SystemExit(main())
