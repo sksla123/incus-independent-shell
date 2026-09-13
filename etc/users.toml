@@ -1,0 +1,3 @@
+[users]
+# Management ID is independent from Unix UID/GID.
+"incus-test" = 123
