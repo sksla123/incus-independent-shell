@@ -1,3 +1,4 @@
-[users]
-# Management ID is independent from Unix UID/GID.
-"incus-test" = 123
+[users."1001"]
+username = "incus-test"
+management_id = 123
+EOF

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import pwd
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
 
 DEFAULT_CONFIG = Path('/etc/incus-only-shell/config.toml')
 DEFAULT_USERS = Path('/etc/incus-only-shell/users.toml')
@@ -16,6 +18,13 @@ class Identity:
     uid: int
     gid: int
     home: str
+
+
+@dataclass(frozen=True)
+class UserConfig:
+    username: str
+    uid: int
+    management_id: int
 
 
 @dataclass(frozen=True)
@@ -32,11 +41,19 @@ class PlatformConfig:
 
 
 def current_identity() -> Identity:
-    p = pwd.getpwuid(__import__('os').getuid())
-    return Identity(p.pw_name, p.pw_uid, p.pw_gid, p.pw_dir)
+    p = pwd.getpwuid(os.getuid())
+
+    return Identity(
+        username=p.pw_name,
+        uid=p.pw_uid,
+        gid=p.pw_gid,
+        home=p.pw_dir,
+    )
 
 
-def load_platform(path: Path = DEFAULT_CONFIG) -> PlatformConfig:
+def load_platform(
+    path: Path = DEFAULT_CONFIG,
+) -> PlatformConfig:
     with path.open('rb') as f:
         data = tomllib.load(f)
 
@@ -44,39 +61,288 @@ def load_platform(path: Path = DEFAULT_CONFIG) -> PlatformConfig:
     network = data.get('network', {})
 
     cfg = PlatformConfig(
-        project_prefix=str(platform.get('project_prefix', 'user-')),
-        max_containers=int(platform.get('max_containers', 3)),
-        slot_key=str(platform.get('slot_key', 'user.incus-only.slot')),
-        management_key=str(platform.get('management_key', 'user.incus-only.management_id')),
-        nat_device=str(network.get('nat_device', 'eth0')),
-        ipv4_prefix=str(network.get('ipv4_prefix', '10.100')),
-        service_slots=int(network.get('service_slots', 10)),
-        users_file=Path(platform.get('users_file', str(DEFAULT_USERS))),
-        incus_conf=Path(platform.get('incus_conf', '/etc/incus-only-shell/client')),
+        project_prefix=str(
+            platform.get(
+                'project_prefix',
+                'user-',
+            )
+        ),
+
+        max_containers=int(
+            platform.get(
+                'max_containers',
+                3,
+            )
+        ),
+
+        slot_key=str(
+            platform.get(
+                'slot_key',
+                'user.incus-only.slot',
+            )
+        ),
+
+        management_key=str(
+            platform.get(
+                'management_key',
+                'user.incus-only.management_id',
+            )
+        ),
+
+        nat_device=str(
+            network.get(
+                'nat_device',
+                'eth0',
+            )
+        ),
+
+        ipv4_prefix=str(
+            network.get(
+                'ipv4_prefix',
+                '10.100',
+            )
+        ),
+
+        service_slots=int(
+            network.get(
+                'service_slots',
+                10,
+            )
+        ),
+
+        users_file=Path(
+            platform.get(
+                'users_file',
+                str(DEFAULT_USERS),
+            )
+        ),
+
+        incus_conf=Path(
+            platform.get(
+                'incus_conf',
+                '/etc/incus-only-shell/client',
+            )
+        ),
     )
 
     if not (1 <= cfg.max_containers <= 9):
-        raise ValueError('max_containers must be in 1..9')
-    if not (1 <= cfg.service_slots <= 10):
-        raise ValueError('service_slots must be in 1..10')
+        raise ValueError(
+            'max_containers must be in 1..9'
+        )
 
-    # Validate the two-octet prefix without baking a specific network into code.
-    probe = ipaddress.ip_address(f'{cfg.ipv4_prefix}.0.1')
-    if not isinstance(probe, ipaddress.IPv4Address):
-        raise ValueError('ipv4_prefix must be the first two octets of an IPv4 address')
+    if not (1 <= cfg.service_slots <= 10):
+        raise ValueError(
+            'service_slots must be in 1..10'
+        )
+
+    # Validate that ipv4_prefix is exactly two IPv4 octets.
+    parts = cfg.ipv4_prefix.split('.')
+
+    if len(parts) != 2:
+        raise ValueError(
+            'ipv4_prefix must contain exactly two IPv4 octets'
+        )
+
+    try:
+        first = int(parts[0])
+        second = int(parts[1])
+    except ValueError as exc:
+        raise ValueError(
+            'ipv4_prefix must contain numeric IPv4 octets'
+        ) from exc
+
+    if not (
+        0 <= first <= 255
+        and 0 <= second <= 255
+    ):
+        raise ValueError(
+            'ipv4_prefix octets must be in 0..255'
+        )
+
+    probe = ipaddress.ip_address(
+        f'{cfg.ipv4_prefix}.0.1'
+    )
+
+    if not isinstance(
+        probe,
+        ipaddress.IPv4Address,
+    ):
+        raise ValueError(
+            'ipv4_prefix must be the first two octets '
+            'of an IPv4 address'
+        )
 
     return cfg
 
 
-def load_management_id(username: str, users_file: Path) -> int:
+def load_user_config(
+    identity: Identity,
+    users_file: Path,
+) -> UserConfig:
     with users_file.open('rb') as f:
         data = tomllib.load(f)
 
     users = data.get('users', {})
-    if username not in users:
-        raise KeyError(f'No management ID configured for user {username!r}')
 
-    value = int(users[username])
-    if not (0 <= value <= 999):
-        raise ValueError(f'Management ID for {username!r} must be in 000..999')
-    return value
+    if not isinstance(users, dict):
+        raise ValueError(
+            '[users] must be a TOML table'
+        )
+
+    uid_key = str(identity.uid)
+
+    if uid_key not in users:
+        raise KeyError(
+            f'No user configuration for host UID {identity.uid}'
+        )
+
+    entry = users[uid_key]
+
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f'User configuration for UID {identity.uid} '
+            'must be a TOML table'
+        )
+
+    configured_username = str(
+        entry.get(
+            'username',
+            '',
+        )
+    ).strip()
+
+    if not configured_username:
+        raise ValueError(
+            f'username is missing for host UID {identity.uid}'
+        )
+
+    if configured_username != identity.username:
+        raise ValueError(
+            f'Host UID {identity.uid} resolves to '
+            f'{identity.username!r}, but users.toml specifies '
+            f'{configured_username!r}'
+        )
+
+    try:
+        management_id = int(
+            entry['management_id']
+        )
+    except KeyError as exc:
+        raise ValueError(
+            f'management_id is missing for host UID {identity.uid}'
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f'management_id for host UID {identity.uid} '
+            'must be an integer'
+        ) from exc
+
+    if not (0 <= management_id <= 999):
+        raise ValueError(
+            f'Management ID for host UID {identity.uid} '
+            'must be in 000..999'
+        )
+
+    # Validate the entire users database.
+    seen_usernames: dict[str, str] = {}
+    seen_management_ids: dict[int, str] = {}
+
+    for other_uid_key, other_entry in users.items():
+        try:
+            other_uid = int(
+                other_uid_key
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f'Invalid host UID key {other_uid_key!r} '
+                'in users.toml'
+            ) from exc
+
+        if other_uid < 0:
+            raise ValueError(
+                f'Host UID must not be negative: {other_uid}'
+            )
+
+        if not isinstance(
+            other_entry,
+            dict,
+        ):
+            raise ValueError(
+                f'User configuration for UID {other_uid} '
+                'must be a TOML table'
+            )
+
+        other_username = str(
+            other_entry.get(
+                'username',
+                '',
+            )
+        ).strip()
+
+        if not other_username:
+            raise ValueError(
+                f'username is missing for host UID {other_uid}'
+            )
+
+        try:
+            other_management_id = int(
+                other_entry['management_id']
+            )
+        except KeyError as exc:
+            raise ValueError(
+                f'management_id is missing for host UID {other_uid}'
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f'management_id for host UID {other_uid} '
+                'must be an integer'
+            ) from exc
+
+        if not (
+            0 <= other_management_id <= 999
+        ):
+            raise ValueError(
+                f'Management ID for host UID {other_uid} '
+                'must be in 000..999'
+            )
+
+        previous_uid = seen_usernames.get(
+            other_username
+        )
+
+        if (
+            previous_uid is not None
+            and previous_uid != other_uid_key
+        ):
+            raise ValueError(
+                f'Duplicate username {other_username!r}: '
+                f'UID {previous_uid} and UID {other_uid_key}'
+            )
+
+        previous_uid = seen_management_ids.get(
+            other_management_id
+        )
+
+        if (
+            previous_uid is not None
+            and previous_uid != other_uid_key
+        ):
+            raise ValueError(
+                f'Duplicate management ID '
+                f'{other_management_id:03d}: '
+                f'UID {previous_uid} and UID {other_uid_key}'
+            )
+
+        seen_usernames[
+            other_username
+        ] = other_uid_key
+
+        seen_management_ids[
+            other_management_id
+        ] = other_uid_key
+
+    return UserConfig(
+        username=identity.username,
+        uid=identity.uid,
+        management_id=management_id,
+    )
