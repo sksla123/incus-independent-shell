@@ -48,6 +48,14 @@ class CommandDispatcher:
         if not args:
             return self._deny_policy()
 
+        if args[0] != 'incus':
+            return self._deny_policy()
+
+        args = args[1:]
+
+        if not args:
+            return self._deny_policy('Usage: incus COMMAND [ARGS...]')
+
         if args == ['list']:
             return self.client.run(['list']).returncode
         if len(args) == 2 and args[0] == 'list' and valid_name(args[1]):
