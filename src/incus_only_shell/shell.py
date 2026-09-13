@@ -14,7 +14,8 @@ from .config import (
 from .incus import IncusClient
 from .parser import split_commands
 from .policy import HOST_DENIED_MESSAGE
-from .slots import SlotAllocator
+from .addressing import AddressPlan
+from .slots import SlotManager
 
 
 class IncusOnlyShell:
@@ -80,10 +81,19 @@ class IncusOnlyShell:
             env=self.env,
         )
 
-        self.slots = SlotAllocator(
-            client=self.incus,
-            cfg=self.cfg,
+        self.address_plan = AddressPlan(
+            ipv4_prefix=self.cfg.ipv4_prefix,
             management_id=self.management_id,
+            max_containers=self.cfg.max_containers,
+            service_slots=self.cfg.service_slots,
+        )
+
+        self.slots = SlotManager(
+            client=self.incus,
+            plan=self.address_plan,
+            slot_key=self.cfg.slot_key,
+            management_key=self.cfg.management_key,
+            home=self.identity.home,
         )
 
         self.dispatcher = CommandDispatcher(
