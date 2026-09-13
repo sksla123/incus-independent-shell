@@ -4,7 +4,13 @@ from pathlib import Path
 
 from .incus import IncusClient, IncusError
 from .lifecycle import Lifecycle
-from .policy import INCUS_ADMIN_DENIED, INCUS_POLICY_DENIED, valid_image, valid_name
+
+from .policy import (
+    INCUS_ADMIN_DENIED_MESSAGE,
+    INCUS_POLICY_DENIED_MESSAGE,
+    valid_image,
+    valid_name,
+)
 
 
 class CommandDispatcher:
@@ -16,13 +22,13 @@ class CommandDispatcher:
     def _deny_admin(self, message: str | None = None) -> int:
         if message:
             print(message)
-        print(INCUS_ADMIN_DENIED)
+        print(INCUS_ADMIN_DENIED_MESSAGE)
         return 126
 
     def _deny_policy(self, message: str | None = None) -> int:
         if message:
             print(message)
-        print(INCUS_POLICY_DENIED)
+        print(INCUS_POLICY_DENIED_MESSAGE)
         return 126
 
     def _home_path(self, value: str, must_exist: bool) -> str | None:
