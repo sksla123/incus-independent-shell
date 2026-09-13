@@ -2,6 +2,7 @@
 set -eu
 
 install -d -o root -g root -m 755 /usr/local/lib/incus-only-shell
+rm -rf /usr/local/lib/incus-only-shell/incus_only_shell
 cp -R src/incus_only_shell /usr/local/lib/incus-only-shell/
 chown -R root:root /usr/local/lib/incus-only-shell/incus_only_shell
 find /usr/local/lib/incus-only-shell/incus_only_shell -type d -exec chmod 755 {} \;
@@ -20,4 +21,4 @@ fi
 /usr/bin/python3 -m compileall -q /usr/local/lib/incus-only-shell/incus_only_shell
 /usr/bin/python3 -m py_compile /usr/local/sbin/incus-only-shell
 
-echo 'Installed incus-only-shell v2.'
+echo 'Installed incus-only-shell v2.1.'
