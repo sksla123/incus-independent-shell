@@ -5,6 +5,7 @@ import os
 import readline
 import sys
 
+from .addressing import AddressPlan
 from .commands import CommandDispatcher
 from .config import (
     current_identity,
@@ -12,16 +13,15 @@ from .config import (
     load_user_config,
 )
 from .incus import IncusClient
+from .lifecycle import Lifecycle
 from .parser import split_commands
 from .policy import HOST_DENIED_MESSAGE
-from .addressing import AddressPlan
 from .slots import SlotManager
 
 
 class IncusOnlyShell:
     def __init__(self) -> None:
         self.identity = current_identity()
-
         self.cfg = load_platform()
 
         self.user_cfg = load_user_config(
@@ -29,63 +29,25 @@ class IncusOnlyShell:
             self.cfg.users_file,
         )
 
-        self.management_id = (
-            self.user_cfg.management_id
-        )
-
-        self.project = (
-            f'{self.cfg.project_prefix}'
-            f'{self.identity.uid}'
-        )
+        self.management_id = self.user_cfg.management_id
+        self.project = f'{self.cfg.project_prefix}{self.identity.uid}'
 
         self.history_file = os.path.join(
             self.identity.home,
             '.incus-only-shell_history',
         )
 
-        self.env = {
-            'HOME': self.identity.home,
-            'USER': self.identity.username,
-            'LOGNAME': self.identity.username,
-
-            'PATH': (
-                '/usr/local/bin:'
-                '/usr/bin:'
-                '/bin:'
-                '/usr/sbin:'
-                '/sbin'
-            ),
-
-            'LANG': os.environ.get(
-                'LANG',
-                'C.UTF-8',
-            ),
-
-            'TERM': os.environ.get(
-                'TERM',
-                'xterm-256color',
-            ),
-
-            # Ignore user-controlled ~/.config/incus.
-            'INCUS_CONF': str(
-                self.cfg.incus_conf
-            ),
-
-            # User cannot switch remote/project through environment.
-            'INCUS_REMOTE': 'local',
-            'INCUS_PROJECT': self.project,
-        }
-
         self.incus = IncusClient(
             project=self.project,
-            env=self.env,
+            home=self.identity.home,
+            incus_conf=str(self.cfg.incus_conf),
         )
 
         self.address_plan = AddressPlan(
-            ipv4_prefix=self.cfg.ipv4_prefix,
             management_id=self.management_id,
             max_containers=self.cfg.max_containers,
             service_slots=self.cfg.service_slots,
+            ipv4_prefix=self.cfg.ipv4_prefix,
         )
 
         self.slots = SlotManager(
@@ -96,53 +58,44 @@ class IncusOnlyShell:
             home=self.identity.home,
         )
 
-        self.dispatcher = CommandDispatcher(
-            identity=self.identity,
-            user_cfg=self.user_cfg,
-            cfg=self.cfg,
+        self.lifecycle = Lifecycle(
             client=self.incus,
             slots=self.slots,
-            env=self.env,
+            nat_device=self.cfg.nat_device,
+        )
+
+        self.dispatcher = CommandDispatcher(
+            client=self.incus,
+            lifecycle=self.lifecycle,
+            home=self.identity.home,
         )
 
     def setup_readline(self) -> None:
         readline.parse_and_bind(
             'set editing-mode emacs'
         )
-
         readline.parse_and_bind(
             'set enable-bracketed-paste on'
         )
-
-        readline.set_history_length(
-            1000
-        )
+        readline.set_history_length(1000)
 
         try:
             readline.read_history_file(
                 self.history_file
             )
-        except (
-            FileNotFoundError,
-            OSError,
-        ):
+        except (FileNotFoundError, OSError):
             pass
 
     def save_history(self) -> None:
         try:
-            readline.set_history_length(
-                1000
-            )
-
+            readline.set_history_length(1000)
             readline.write_history_file(
                 self.history_file
             )
-
             os.chmod(
                 self.history_file,
                 0o600,
             )
-
         except OSError:
             pass
 
@@ -166,9 +119,7 @@ class IncusOnlyShell:
         self,
         text: str,
     ) -> int:
-        commands = split_commands(
-            text
-        )
+        commands = split_commands(text)
 
         result = 0
 
@@ -181,7 +132,6 @@ class IncusOnlyShell:
 
     def interactive(self) -> int:
         self.setup_readline()
-
         atexit.register(
             self.save_history
         )
@@ -215,7 +165,6 @@ class IncusOnlyShell:
             return self.dispatch_text(
                 command
             )
-
         except EOFError:
             return 0
 
@@ -246,10 +195,6 @@ def main() -> int:
     if len(sys.argv) == 1:
         return shell.interactive()
 
-    # sshd normally invokes the user's login shell as:
-    #
-    #   shell -c 'command'
-    #
     if (
         len(sys.argv) == 3
         and sys.argv[1] == '-c'
