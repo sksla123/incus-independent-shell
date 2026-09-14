@@ -68,7 +68,14 @@ Navigation:
       Show incus-only-shell command history.
 
   grep
-      Search text. Also allowed as the final stage of a safe read-only pipeline.
+      Search text.
+
+      grep can also be used as the final stage of one
+      read-only pipeline.
+
+      Examples:
+        ps aux | grep incus
+        incus exec c1 -- sshd -T | grep passwordauthentication
 
   help
       Show Incus help and this allowed-command list.
@@ -84,7 +91,6 @@ Host shell:
 
       WARNING:
       Commands inside Bash are NOT filtered by incus-only-shell.
-      Use this only when host-side work is intentionally required.
 
       Exit Bash to return to incus-only-shell.
 
@@ -208,9 +214,19 @@ Incus:
 
 Examples:
   incus list
-  incus launch images:debian/13 c1
+  incus launch images:debian/13/cloud c1
   incus exec c1 -- bash
   incus exec c1 -- bash -c 'echo hello && id'
+
+Multiline example:
+  incus exec c1 -- sh -c '
+  echo hello
+  id
+  ip route
+  '
+
+Pipeline example:
+  incus exec c1 -- sshd -T | grep passwordauthentication
 
 
 Commands not listed above are not permitted directly by this wrapper.
@@ -231,129 +247,319 @@ is_host_command() {
     return 1
 }
 
+#
+# Determine whether quotes in a command block are complete.
+#
+# Output:
+#   plain   = command is syntactically complete enough for our parser
+#   single  = open single quote
+#   double  = open double quote
+#   escape  = trailing backslash
+#
 quote_state() {
     local input="$1"
     local len=${#input}
-    local i=0 ch state="plain"
+    local i=0
+    local ch
+    local state="plain"
 
     while (( i < len )); do
         ch="${input:i:1}"
+
         case "$state" in
             plain)
                 case "$ch" in
-                    "'" ) state="single" ;;
-                    '"' ) state="double" ;;
-                    "\\" ) ((i++)) ;;
+                    "'")
+                        state="single"
+                        ;;
+
+                    '"')
+                        state="double"
+                        ;;
+
+                    "\\")
+                        if (( i + 1 >= len )); then
+                            printf '%s' "escape"
+                            return 0
+                        fi
+                        ((i++))
+                        ;;
                 esac
                 ;;
+
             single)
-                [[ "$ch" == "'" ]] && state="plain"
+                if [[ "$ch" == "'" ]]; then
+                    state="plain"
+                fi
                 ;;
+
             double)
                 case "$ch" in
-                    '"' ) state="plain" ;;
-                    "\\" ) ((i++)) ;;
+                    '"')
+                        state="plain"
+                        ;;
+
+                    "\\")
+                        if (( i + 1 >= len )); then
+                            printf '%s' "escape"
+                            return 0
+                        fi
+                        ((i++))
+                        ;;
                 esac
                 ;;
         esac
+
         ((i++))
     done
 
     printf '%s' "$state"
 }
 
+#
+# Split a completed input block into separate commands at
+# top-level newlines only.
+#
+# Newlines inside quotes are preserved.
+#
 split_top_level_commands() {
     local input="$1"
     local len=${#input}
-    local i=0 ch state="plain" current=""
+    local i=0
+    local ch
+    local state="plain"
+    local current=""
+
     COMMANDS=()
 
     while (( i < len )); do
         ch="${input:i:1}"
+
         case "$state" in
             plain)
                 case "$ch" in
-                    "'" ) state="single"; current+="$ch" ;;
-                    '"' ) state="double"; current+="$ch" ;;
-                    "\\" )
+                    "'")
+                        state="single"
                         current+="$ch"
-                        ((i++))
-                        (( i < len )) && current+="${input:i:1}"
                         ;;
+
+                    '"')
+                        state="double"
+                        current+="$ch"
+                        ;;
+
+                    "\\")
+                        current+="$ch"
+
+                        if (( i + 1 >= len )); then
+                            return 1
+                        fi
+
+                        ((i++))
+                        current+="${input:i:1}"
+                        ;;
+
                     $'\n')
                         if [[ -n "${current//[[:space:]]/}" ]]; then
                             COMMANDS+=("$current")
                         fi
+
                         current=""
                         ;;
-                    * ) current+="$ch" ;;
+
+                    *)
+                        current+="$ch"
+                        ;;
                 esac
                 ;;
+
             single)
                 current+="$ch"
-                [[ "$ch" == "'" ]] && state="plain"
+
+                if [[ "$ch" == "'" ]]; then
+                    state="plain"
+                fi
                 ;;
+
             double)
                 current+="$ch"
+
                 case "$ch" in
-                    '"' ) state="plain" ;;
-                    "\\" )
+                    '"')
+                        state="plain"
+                        ;;
+
+                    "\\")
+                        if (( i + 1 >= len )); then
+                            return 1
+                        fi
+
                         ((i++))
-                        (( i < len )) && current+="${input:i:1}"
+                        current+="${input:i:1}"
                         ;;
                 esac
                 ;;
         esac
+
         ((i++))
     done
 
     [[ "$state" == "plain" ]] || return 1
+
     if [[ -n "${current//[[:space:]]/}" ]]; then
         COMMANDS+=("$current")
     fi
+
+    return 0
 }
 
+#
+# Detect one top-level pipeline.
+#
+# Only:
+#
+#   allowed-command ... | grep ...
+#
+# is permitted.
+#
+# Pipes inside quotes are ignored because those belong to the
+# command passed into the container.
+#
 split_safe_grep_pipeline() {
     local input="$1"
     local len=${#input}
-    local i=0 ch state="plain" left="" right="" found=0
+    local i=0
+    local ch
+    local state="plain"
+    local side="left"
+    local found=0
+
+    PIPE_LEFT=""
+    PIPE_RIGHT=""
 
     while (( i < len )); do
         ch="${input:i:1}"
+
         case "$state" in
             plain)
                 case "$ch" in
-                    "'" ) state="single" ;;
-                    '"' ) state="double" ;;
-                    "\\" ) ((i++)) ;;
-                    '|' )
-                        (( found == 0 )) || return 2
-                        found=1
+                    "'")
+                        state="single"
+                        ;;
+
+                    '"')
+                        state="double"
+                        ;;
+
+                    "\\")
+                        if [[ "$side" == "left" ]]; then
+                            PIPE_LEFT+="$ch"
+                        else
+                            PIPE_RIGHT+="$ch"
+                        fi
+
+                        if (( i + 1 >= len )); then
+                            return 1
+                        fi
+
+                        ((i++))
+                        ch="${input:i:1}"
+
+                        if [[ "$side" == "left" ]]; then
+                            PIPE_LEFT+="$ch"
+                        else
+                            PIPE_RIGHT+="$ch"
+                        fi
+
                         ((i++))
                         continue
                         ;;
-                    ';'|'&'|'<'|'>'|'`' ) return 2 ;;
+
+                    '|')
+                        if (( found != 0 )); then
+                            return 2
+                        fi
+
+                        found=1
+                        side="right"
+                        ((i++))
+                        continue
+                        ;;
+
+                    ';'|'&'|'<'|'>'|'`')
+                        return 2
+                        ;;
                 esac
                 ;;
-            single) [[ "$ch" == "'" ]] && state="plain" ;;
+
+            single)
+                if [[ "$ch" == "'" ]]; then
+                    state="plain"
+                fi
+                ;;
+
             double)
                 case "$ch" in
-                    '"' ) state="plain" ;;
-                    "\\" ) ((i++)) ;;
+                    '"')
+                        state="plain"
+                        ;;
+
+                    "\\")
+                        if [[ "$side" == "left" ]]; then
+                            PIPE_LEFT+="$ch"
+                        else
+                            PIPE_RIGHT+="$ch"
+                        fi
+
+                        if (( i + 1 >= len )); then
+                            return 1
+                        fi
+
+                        ((i++))
+                        ch="${input:i:1}"
+
+                        if [[ "$side" == "left" ]]; then
+                            PIPE_LEFT+="$ch"
+                        else
+                            PIPE_RIGHT+="$ch"
+                        fi
+
+                        ((i++))
+                        continue
+                        ;;
                 esac
                 ;;
         esac
 
-        if (( found == 0 )); then left+="$ch"; else right+="$ch"; fi
+        if [[ "$side" == "left" ]]; then
+            PIPE_LEFT+="$ch"
+        else
+            PIPE_RIGHT+="$ch"
+        fi
+
         ((i++))
     done
 
     [[ "$state" == "plain" ]] || return 1
-    (( found == 1 )) || return 3
-    PIPE_LEFT="$left"
-    PIPE_RIGHT="$right"
+
+    if (( found == 0 )); then
+        return 3
+    fi
+
+    [[ -n "${PIPE_LEFT//[[:space:]]/}" ]] || return 2
+    [[ -n "${PIPE_RIGHT//[[:space:]]/}" ]] || return 2
+
+    return 0
 }
 
+#
+# Convert one shell-like command line to ARGV without invoking eval.
+#
+# Host-side shell metacharacters remain blocked.
+#
+# Characters inside single/double quotes become literal parts of
+# the relevant argument.
+#
 tokenize() {
     local input="$1"
     local len=${#input}
@@ -383,14 +589,16 @@ tokenize() {
 
                     "\\")
                         ((i++))
+
                         if (( i >= len )); then
                             return 1
                         fi
+
                         token+="${input:i:1}"
                         have_token=1
                         ;;
 
-                    ' '|$'\t')
+                    ' '|$'\t'|$'\n')
                         if (( have_token )); then
                             ARGV+=("$token")
                             token=""
@@ -425,9 +633,11 @@ tokenize() {
 
                     "\\")
                         ((i++))
+
                         if (( i >= len )); then
                             return 1
                         fi
+
                         token+="${input:i:1}"
                         ;;
 
@@ -537,23 +747,49 @@ nvidia_smi_allowed() {
     return 0
 }
 
+history_allowed() {
+    case "$#" in
+        0)
+            return 0
+            ;;
+
+        1)
+            [[ "$1" =~ ^[0-9]+$ ]]
+            return $?
+            ;;
+    esac
+
+    return 1
+}
+
 run_command() {
     local cmd="${ARGV[0]}"
     local -a args=("${ARGV[@]:1}")
 
     case "$cmd" in
         exit|logout)
+            history -a 2>/dev/null || true
             exit 0
-            ;;
-
-        history)
-            history
-            return 0
             ;;
 
         help)
             help_text
             return 0
+            ;;
+
+        history)
+            if ! history_allowed "${args[@]}"; then
+                printf 'history: only "history" or "history N" is permitted.\n' >&2
+                return 126
+            fi
+
+            if (( ${#args[@]} == 0 )); then
+                history
+            else
+                history "${args[0]}"
+            fi
+
+            return $?
             ;;
 
         cd)
@@ -692,13 +928,27 @@ run_simple_line() {
     rc=$?
 
     case "$rc" in
-        0) ;;
-        1) printf 'Invalid quoting or escape sequence.\n' >&2; return 2 ;;
-        2) deny; return 126 ;;
-        *) deny; return 126 ;;
+        0)
+            ;;
+
+        1)
+            printf 'Invalid quoting or escape sequence.\n' >&2
+            return 2
+            ;;
+
+        2)
+            deny
+            return 126
+            ;;
+
+        *)
+            deny
+            return 126
+            ;;
     esac
 
     (( ${#ARGV[@]} > 0 )) || return 0
+
     run_command
 }
 
@@ -710,32 +960,64 @@ run_line() {
     rc=$?
 
     case "$rc" in
-        3) run_simple_line "$line"; return $? ;;
-        0) ;;
-        1) printf 'Invalid quoting or escape sequence.\n' >&2; return 2 ;;
-        *) deny; return 126 ;;
+        3)
+            run_simple_line "$line"
+            return $?
+            ;;
+
+        0)
+            ;;
+
+        1)
+            printf 'Invalid quoting or escape sequence.\n' >&2
+            return 2
+            ;;
+
+        *)
+            deny
+            return 126
+            ;;
     esac
 
-    tokenize "$PIPE_RIGHT" || {
+    #
+    # Right side must be grep.
+    #
+    tokenize "$PIPE_RIGHT"
+    rc=$?
+
+    if (( rc != 0 )); then
         printf 'Invalid grep pipeline.\n' >&2
         return 2
-    }
+    fi
+
     (( ${#ARGV[@]} > 0 )) || {
         printf 'Invalid grep pipeline.\n' >&2
         return 2
     }
+
     [[ "${ARGV[0]}" == "grep" ]] || {
         deny
         return 126
     }
+
     local -a grep_args=("${ARGV[@]:1}")
 
-    ( run_simple_line "$PIPE_LEFT" ) | command /usr/bin/grep "${grep_args[@]}"
+    #
+    # Validate the left side before the pipeline executes.
+    #
+    # run_simple_line() still enforces the normal allowlist.
+    #
+    (
+        run_simple_line "$PIPE_LEFT"
+    ) | command /usr/bin/grep "${grep_args[@]}"
+
+    return "${PIPESTATUS[1]}"
 }
 
 run_input() {
     local input="$1"
     local cmd
+    local rc=0
 
     if ! split_top_level_commands "$input"; then
         printf 'Invalid quoting or escape sequence.\n' >&2
@@ -744,7 +1026,60 @@ run_input() {
 
     for cmd in "${COMMANDS[@]}"; do
         run_line "$cmd"
+        rc=$?
     done
+
+    return "$rc"
+}
+
+#
+# Read one complete interactive command block.
+#
+# First physical line:
+#   readline (-e) is used, so Up/Down history works.
+#
+# Continuation lines:
+#   plain read is used. This is important for multiline paste.
+#
+read_interactive_block() {
+    local prompt="$1"
+    local line
+    local input
+    local state
+
+    if ! IFS= read -e -r -p "$prompt" line; then
+        printf '\n'
+        return 1
+    fi
+
+    input="$line"
+
+    while true; do
+        state="$(quote_state "$input")"
+
+        case "$state" in
+            plain)
+                break
+                ;;
+
+            single|double|escape)
+                if ! IFS= read -r -p '> ' line; then
+                    printf '\n'
+                    return 2
+                fi
+
+                input+=$'\n'"$line"
+                ;;
+
+            *)
+                printf 'Internal parser error.\n' >&2
+                return 2
+                ;;
+        esac
+    done
+
+    READ_BLOCK="$input"
+    return 0
 }
 
 #
@@ -763,11 +1098,35 @@ if [[ "${1-}" == "-c" ]]; then
 fi
 
 #
-# Interactive shell.
+# Interactive shell setup.
 #
 if [[ -t 0 ]]; then
-    bind 'set enable-bracketed-paste on' 2>/dev/null || true
+    #
+    # This is intentionally OFF.
+    #
+    # With bracketed-paste enabled, Readline can retain a whole pasted
+    # multiline block internally and continuation reads do not reliably
+    # receive the remaining physical lines.
+    #
+    # With it disabled:
+    #
+    #   first line -> read -e
+    #   remaining pasted lines -> queued on the TTY
+    #   continuation -> read -r consumes them
+    #
+    bind 'set enable-bracketed-paste off' 2>/dev/null || true
+
     set -o history
+
+    #
+    # Preserve literal newlines in multiline history entries.
+    #
+    shopt -s cmdhist
+    shopt -s lithist
+
+    touch "$HISTFILE" 2>/dev/null || true
+    chmod 600 "$HISTFILE" 2>/dev/null || true
+
     history -r "$HISTFILE" 2>/dev/null || true
 
     banner
@@ -776,22 +1135,28 @@ fi
 
 while true; do
     prompt="[incus-shell] ${USER:-user}@$(hostname):${PWD}\$ "
-    input=""
 
     if [[ -t 0 ]]; then
-        if ! IFS= read -e -r -p "$prompt" line; then
-            printf '\n'
-            exit 0
-        fi
-        input="$line"
+        READ_BLOCK=""
 
-        while [[ "$(quote_state "$input")" != "plain" ]]; do
-            if ! IFS= read -r -p '> ' line; then
-                printf '\n'
-                exit 2
-            fi
-            input+=$'\n'"$line"
-        done
+        read_interactive_block "$prompt"
+        rc=$?
+
+        case "$rc" in
+            0)
+                ;;
+
+            1)
+                history -a 2>/dev/null || true
+                exit 0
+                ;;
+
+            *)
+                continue
+                ;;
+        esac
+
+        input="$READ_BLOCK"
 
         if [[ -n "${input//[[:space:]]/}" ]]; then
             history -s "$input"
@@ -801,6 +1166,7 @@ while true; do
         if ! input="$(cat)"; then
             exit 1
         fi
+
         [[ -n "$input" ]] || exit 0
     fi
 
