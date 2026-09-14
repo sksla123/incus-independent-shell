@@ -13,6 +13,12 @@ HISTSIZE=1000
 HISTFILESIZE=2000
 export HISTFILE HISTSIZE HISTFILESIZE
 
+#
+# Short timeout used to collect additional lines that were pasted
+# into the terminal together with the first line.
+#
+PASTE_DRAIN_TIMEOUT="0.03"
+
 HOST_COMMANDS=(
     ls pwd clear grep
     whoami id groups who w uptime uname
@@ -70,7 +76,7 @@ Navigation:
   grep
       Search text.
 
-      grep can also be used as the final stage of one
+      grep is also allowed as the final stage of one
       read-only pipeline.
 
       Examples:
@@ -225,6 +231,10 @@ Multiline example:
   ip route
   '
 
+Multiple-command paste example:
+  incus exec c1 -- touch /home/user/testfile
+  ls -ln /home/user/testfile
+
 Pipeline example:
   incus exec c1 -- sshd -T | grep passwordauthentication
 
@@ -247,15 +257,6 @@ is_host_command() {
     return 1
 }
 
-#
-# Determine whether quotes in a command block are complete.
-#
-# Output:
-#   plain   = command is syntactically complete enough for our parser
-#   single  = open single quote
-#   double  = open double quote
-#   escape  = trailing backslash
-#
 quote_state() {
     local input="$1"
     local len=${#input}
@@ -282,6 +283,7 @@ quote_state() {
                             printf '%s' "escape"
                             return 0
                         fi
+
                         ((i++))
                         ;;
                 esac
@@ -304,6 +306,7 @@ quote_state() {
                             printf '%s' "escape"
                             return 0
                         fi
+
                         ((i++))
                         ;;
                 esac
@@ -316,12 +319,6 @@ quote_state() {
     printf '%s' "$state"
 }
 
-#
-# Split a completed input block into separate commands at
-# top-level newlines only.
-#
-# Newlines inside quotes are preserved.
-#
 split_top_level_commands() {
     local input="$1"
     local len=${#input}
@@ -413,18 +410,6 @@ split_top_level_commands() {
     return 0
 }
 
-#
-# Detect one top-level pipeline.
-#
-# Only:
-#
-#   allowed-command ... | grep ...
-#
-# is permitted.
-#
-# Pipes inside quotes are ignored because those belong to the
-# command passed into the container.
-#
 split_safe_grep_pipeline() {
     local input="$1"
     local len=${#input}
@@ -552,14 +537,6 @@ split_safe_grep_pipeline() {
     return 0
 }
 
-#
-# Convert one shell-like command line to ARGV without invoking eval.
-#
-# Host-side shell metacharacters remain blocked.
-#
-# Characters inside single/double quotes become literal parts of
-# the relevant argument.
-#
 tokenize() {
     local input="$1"
     local len=${#input}
@@ -684,6 +661,7 @@ ip_allowed() {
     done
 
     [[ -n "$object" ]] || return 1
+
     return 0
 }
 
@@ -979,9 +957,6 @@ run_line() {
             ;;
     esac
 
-    #
-    # Right side must be grep.
-    #
     tokenize "$PIPE_RIGHT"
     rc=$?
 
@@ -1002,11 +977,6 @@ run_line() {
 
     local -a grep_args=("${ARGV[@]:1}")
 
-    #
-    # Validate the left side before the pipeline executes.
-    #
-    # run_simple_line() still enforces the normal allowlist.
-    #
     (
         run_simple_line "$PIPE_LEFT"
     ) | command /usr/bin/grep "${grep_args[@]}"
@@ -1032,18 +1002,10 @@ run_input() {
     return "$rc"
 }
 
-#
-# Read one complete interactive command block.
-#
-# First physical line:
-#   readline (-e) is used, so Up/Down history works.
-#
-# Continuation lines:
-#   plain read is used. This is important for multiline paste.
-#
 read_interactive_block() {
     local prompt="$1"
     local line
+    local extra
     local input
     local state
 
@@ -1052,8 +1014,12 @@ read_interactive_block() {
         return 1
     fi
 
+    line="${line//$'\r'/}"
     input="$line"
 
+    #
+    # Open quote continuation.
+    #
     while true; do
         state="$(quote_state "$input")"
 
@@ -1063,11 +1029,12 @@ read_interactive_block() {
                 ;;
 
             single|double|escape)
-                if ! IFS= read -r -p '> ' line; then
+                if ! IFS= read -e -r -p '> ' line; then
                     printf '\n'
                     return 2
                 fi
 
+                line="${line//$'\r'/}"
                 input+=$'\n'"$line"
                 ;;
 
@@ -1076,6 +1043,42 @@ read_interactive_block() {
                 return 2
                 ;;
         esac
+    done
+
+    #
+    # Drain additional physical lines from a multi-command paste.
+    #
+    while IFS= read -r -t "$PASTE_DRAIN_TIMEOUT" extra; do
+        extra="${extra//$'\r'/}"
+        input+=$'\n'"$extra"
+
+        #
+        # A drained line may itself open a quoted multiline command.
+        #
+        while true; do
+            state="$(quote_state "$input")"
+
+            case "$state" in
+                plain)
+                    break
+                    ;;
+
+                single|double|escape)
+                    if ! IFS= read -r -p '> ' line; then
+                        printf '\n'
+                        return 2
+                    fi
+
+                    line="${line//$'\r'/}"
+                    input+=$'\n'"$line"
+                    ;;
+
+                *)
+                    printf 'Internal parser error.\n' >&2
+                    return 2
+                    ;;
+            esac
+        done
     done
 
     READ_BLOCK="$input"
@@ -1102,24 +1105,35 @@ fi
 #
 if [[ -t 0 ]]; then
     #
-    # This is intentionally OFF.
+    # Preserve multiline paste as a Readline operation.
     #
-    # With bracketed-paste enabled, Readline can retain a whole pasted
-    # multiline block internally and continuation reads do not reliably
-    # receive the remaining physical lines.
+    bind 'set enable-bracketed-paste on' 2>/dev/null || true
+
     #
-    # With it disabled:
+    # Disable Readline numeric argument bindings.
     #
-    #   first line -> read -e
-    #   remaining pasted lines -> queued on the TTY
-    #   continuation -> read -r consumes them
+    # Some IME/key sequences can otherwise trigger:
     #
-    bind 'set enable-bracketed-paste off' 2>/dev/null || true
+    #   (arg: N)
+    #
+    # This does not affect Up/Down history.
+    #
+    bind -r '\e0' 2>/dev/null || true
+    bind -r '\e1' 2>/dev/null || true
+    bind -r '\e2' 2>/dev/null || true
+    bind -r '\e3' 2>/dev/null || true
+    bind -r '\e4' 2>/dev/null || true
+    bind -r '\e5' 2>/dev/null || true
+    bind -r '\e6' 2>/dev/null || true
+    bind -r '\e7' 2>/dev/null || true
+    bind -r '\e8' 2>/dev/null || true
+    bind -r '\e9' 2>/dev/null || true
+    bind -r '\e-' 2>/dev/null || true
 
     set -o history
 
     #
-    # Preserve literal newlines in multiline history entries.
+    # Keep multiline commands as literal multiline history entries.
     #
     shopt -s cmdhist
     shopt -s lithist
