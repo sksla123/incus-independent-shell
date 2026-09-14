@@ -786,7 +786,7 @@ while true; do
         input="$line"
 
         while [[ "$(quote_state "$input")" != "plain" ]]; do
-            if ! IFS= read -e -r -p '> ' line; then
+            if ! IFS= read -r -p '> ' line; then
                 printf '\n'
                 exit 2
             fi
