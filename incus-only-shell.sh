@@ -13,12 +13,6 @@ HISTSIZE=1000
 HISTFILESIZE=2000
 export HISTFILE HISTSIZE HISTFILESIZE
 
-#
-# Short timeout used to collect additional lines that were pasted
-# into the terminal together with the first line.
-#
-PASTE_DRAIN_TIMEOUT="0.03"
-
 HOST_COMMANDS=(
     ls pwd clear grep
     whoami id groups who w uptime uname
@@ -231,13 +225,15 @@ Multiline example:
   ip route
   '
 
-Multiple-command paste example:
-  incus exec c1 -- touch /home/user/testfile
-  ls -ln /home/user/testfile
-
 Pipeline example:
   incus exec c1 -- sshd -T | grep passwordauthentication
 
+
+Note:
+  Pasting multiple independent commands as several separate lines
+  is not supported by this wrapper.
+
+  Run independent commands one at a time.
 
 Commands not listed above are not permitted directly by this wrapper.
 
@@ -661,7 +657,6 @@ ip_allowed() {
     done
 
     [[ -n "$object" ]] || return 1
-
     return 0
 }
 
@@ -1005,7 +1000,6 @@ run_input() {
 read_interactive_block() {
     local prompt="$1"
     local line
-    local extra
     local input
     local state
 
@@ -1014,12 +1008,8 @@ read_interactive_block() {
         return 1
     fi
 
-    line="${line//$'\r'/}"
-    input="$line"
+    input="${line//$'\r'/}"
 
-    #
-    # Open quote continuation.
-    #
     while true; do
         state="$(quote_state "$input")"
 
@@ -1043,42 +1033,6 @@ read_interactive_block() {
                 return 2
                 ;;
         esac
-    done
-
-    #
-    # Drain additional physical lines from a multi-command paste.
-    #
-    while IFS= read -r -t "$PASTE_DRAIN_TIMEOUT" extra; do
-        extra="${extra//$'\r'/}"
-        input+=$'\n'"$extra"
-
-        #
-        # A drained line may itself open a quoted multiline command.
-        #
-        while true; do
-            state="$(quote_state "$input")"
-
-            case "$state" in
-                plain)
-                    break
-                    ;;
-
-                single|double|escape)
-                    if ! IFS= read -r -p '> ' line; then
-                        printf '\n'
-                        return 2
-                    fi
-
-                    line="${line//$'\r'/}"
-                    input+=$'\n'"$line"
-                    ;;
-
-                *)
-                    printf 'Internal parser error.\n' >&2
-                    return 2
-                    ;;
-            esac
-        done
     done
 
     READ_BLOCK="$input"
@@ -1105,18 +1059,14 @@ fi
 #
 if [[ -t 0 ]]; then
     #
-    # Preserve multiline paste as a Readline operation.
+    # Keep bracketed paste enabled.
     #
     bind 'set enable-bracketed-paste on' 2>/dev/null || true
 
     #
     # Disable Readline numeric argument bindings.
     #
-    # Some IME/key sequences can otherwise trigger:
-    #
-    #   (arg: N)
-    #
-    # This does not affect Up/Down history.
+    # This avoids "(arg: N)" appearing with some IME/key sequences.
     #
     bind -r '\e0' 2>/dev/null || true
     bind -r '\e1' 2>/dev/null || true
@@ -1132,9 +1082,6 @@ if [[ -t 0 ]]; then
 
     set -o history
 
-    #
-    # Keep multiline commands as literal multiline history entries.
-    #
     shopt -s cmdhist
     shopt -s lithist
 
