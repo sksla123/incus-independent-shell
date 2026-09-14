@@ -230,8 +230,8 @@ Pipeline example:
 
 
 Note:
-  Pasting multiple independent commands as several separate lines
-  is not supported by this wrapper.
+  Multiple independent commands pasted as separate lines are
+  not supported.
 
   Run independent commands one at a time.
 
@@ -269,17 +269,14 @@ quote_state() {
                     "'")
                         state="single"
                         ;;
-
                     '"')
                         state="double"
                         ;;
-
                     "\\")
                         if (( i + 1 >= len )); then
                             printf '%s' "escape"
                             return 0
                         fi
-
                         ((i++))
                         ;;
                 esac
@@ -296,13 +293,11 @@ quote_state() {
                     '"')
                         state="plain"
                         ;;
-
                     "\\")
                         if (( i + 1 >= len )); then
                             printf '%s' "escape"
                             return 0
                         fi
-
                         ((i++))
                         ;;
                 esac
@@ -335,12 +330,10 @@ split_top_level_commands() {
                         state="single"
                         current+="$ch"
                         ;;
-
                     '"')
                         state="double"
                         current+="$ch"
                         ;;
-
                     "\\")
                         current+="$ch"
 
@@ -351,15 +344,12 @@ split_top_level_commands() {
                         ((i++))
                         current+="${input:i:1}"
                         ;;
-
                     $'\n')
                         if [[ -n "${current//[[:space:]]/}" ]]; then
                             COMMANDS+=("$current")
                         fi
-
                         current=""
                         ;;
-
                     *)
                         current+="$ch"
                         ;;
@@ -381,7 +371,6 @@ split_top_level_commands() {
                     '"')
                         state="plain"
                         ;;
-
                     "\\")
                         if (( i + 1 >= len )); then
                             return 1
@@ -427,11 +416,9 @@ split_safe_grep_pipeline() {
                     "'")
                         state="single"
                         ;;
-
                     '"')
                         state="double"
                         ;;
-
                     "\\")
                         if [[ "$side" == "left" ]]; then
                             PIPE_LEFT+="$ch"
@@ -455,7 +442,6 @@ split_safe_grep_pipeline() {
                         ((i++))
                         continue
                         ;;
-
                     '|')
                         if (( found != 0 )); then
                             return 2
@@ -466,7 +452,6 @@ split_safe_grep_pipeline() {
                         ((i++))
                         continue
                         ;;
-
                     ';'|'&'|'<'|'>'|'`')
                         return 2
                         ;;
@@ -484,7 +469,6 @@ split_safe_grep_pipeline() {
                     '"')
                         state="plain"
                         ;;
-
                     "\\")
                         if [[ "$side" == "left" ]]; then
                             PIPE_LEFT+="$ch"
@@ -554,12 +538,10 @@ tokenize() {
                         state="single"
                         have_token=1
                         ;;
-
                     '"')
                         state="double"
                         have_token=1
                         ;;
-
                     "\\")
                         ((i++))
 
@@ -570,7 +552,6 @@ tokenize() {
                         token+="${input:i:1}"
                         have_token=1
                         ;;
-
                     ' '|$'\t'|$'\n')
                         if (( have_token )); then
                             ARGV+=("$token")
@@ -578,11 +559,9 @@ tokenize() {
                             have_token=0
                         fi
                         ;;
-
                     ';'|'&'|'|'|'<'|'>'|'`')
                         return 2
                         ;;
-
                     *)
                         token+="$ch"
                         have_token=1
@@ -603,7 +582,6 @@ tokenize() {
                     '"')
                         state="plain"
                         ;;
-
                     "\\")
                         ((i++))
 
@@ -613,7 +591,6 @@ tokenize() {
 
                         token+="${input:i:1}"
                         ;;
-
                     *)
                         token+="$ch"
                         ;;
@@ -665,7 +642,6 @@ hostname_allowed() {
         0)
             return 0
             ;;
-
         1)
             case "$1" in
                 -s|--short|\
@@ -687,7 +663,6 @@ resolvectl_allowed() {
         "")
             return 0
             ;;
-
         status|query|statistics|show-server-state)
             return 0
             ;;
@@ -725,7 +700,6 @@ history_allowed() {
         0)
             return 0
             ;;
-
         1)
             [[ "$1" =~ ^[0-9]+$ ]]
             return $?
@@ -903,17 +877,14 @@ run_simple_line() {
     case "$rc" in
         0)
             ;;
-
         1)
             printf 'Invalid quoting or escape sequence.\n' >&2
             return 2
             ;;
-
         2)
             deny
             return 126
             ;;
-
         *)
             deny
             return 126
@@ -937,15 +908,12 @@ run_line() {
             run_simple_line "$line"
             return $?
             ;;
-
         0)
             ;;
-
         1)
             printf 'Invalid quoting or escape sequence.\n' >&2
             return 2
             ;;
-
         *)
             deny
             return 126
@@ -1058,27 +1026,7 @@ fi
 # Interactive shell setup.
 #
 if [[ -t 0 ]]; then
-    #
-    # Keep bracketed paste enabled.
-    #
     bind 'set enable-bracketed-paste on' 2>/dev/null || true
-
-    #
-    # Disable Readline numeric argument bindings.
-    #
-    # This avoids "(arg: N)" appearing with some IME/key sequences.
-    #
-    bind -r '\e0' 2>/dev/null || true
-    bind -r '\e1' 2>/dev/null || true
-    bind -r '\e2' 2>/dev/null || true
-    bind -r '\e3' 2>/dev/null || true
-    bind -r '\e4' 2>/dev/null || true
-    bind -r '\e5' 2>/dev/null || true
-    bind -r '\e6' 2>/dev/null || true
-    bind -r '\e7' 2>/dev/null || true
-    bind -r '\e8' 2>/dev/null || true
-    bind -r '\e9' 2>/dev/null || true
-    bind -r '\e-' 2>/dev/null || true
 
     set -o history
 
@@ -1106,12 +1054,10 @@ while true; do
         case "$rc" in
             0)
                 ;;
-
             1)
                 history -a 2>/dev/null || true
                 exit 0
                 ;;
-
             *)
                 continue
                 ;;
