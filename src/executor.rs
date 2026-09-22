@@ -82,6 +82,16 @@ fn run_simple(input: &str, history: &[String]) -> Flow {
             Flow::Continue(0)
         }
 
+        "shell-version" => {
+            if argv.len() != 1 {
+                eprintln!("shell-version: no arguments expected");
+                return Flow::Continue(2);
+            }
+
+            println!("incus-only-shell {}", ui::VERSION);
+            Flow::Continue(0)
+        }
+
         "history" => run_history(&argv[1..], history),
         "cd" => run_cd(&argv[1..]),
 

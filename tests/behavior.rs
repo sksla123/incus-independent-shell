@@ -32,7 +32,7 @@ fn multiple_commands_execute_in_order_without_intermediate_prompt() {
     assert_eq!(lines.len(), 3);
     assert_eq!(lines[0], lines[1]);
     assert_eq!(lines[1], lines[2]);
-    assert!(!stdout.contains("[incus-shell]"));
+    assert!(!stdout.contains("[incus-only-shell]"));
 }
 
 #[test]
@@ -118,4 +118,26 @@ fn single_ampersand_is_denied() {
 
     assert_eq!(output.status.code(), Some(126));
     assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn shell_version_is_available() {
+    let output = run_stdin("shell-version\n");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("incus-only-shell {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
+fn shell_version_rejects_arguments() {
+    let output = run_stdin("shell-version extra\n");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .contains("shell-version: no arguments expected"));
 }

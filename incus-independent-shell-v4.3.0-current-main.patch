@@ -1,0 +1,147 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 1d5181d..4aed757 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,6 +1,6 @@
+ [package]
+ name = "incus-only-shell"
+-version = "4.2.0"
++version = "4.3.0"
+ edition = "2021"
+ 
+ [dependencies]
+diff --git a/src/executor.rs b/src/executor.rs
+index d30d2cb..964a75c 100644
+--- a/src/executor.rs
++++ b/src/executor.rs
+@@ -82,6 +82,16 @@ fn run_simple(input: &str, history: &[String]) -> Flow {
+             Flow::Continue(0)
+         }
+ 
++        "shell-version" => {
++            if argv.len() != 1 {
++                eprintln!("shell-version: no arguments expected");
++                return Flow::Continue(2);
++            }
++
++            println!("incus-only-shell {}", ui::VERSION);
++            Flow::Continue(0)
++        }
++
+         "history" => run_history(&argv[1..], history),
+         "cd" => run_cd(&argv[1..]),
+ 
+diff --git a/src/shell.rs b/src/shell.rs
+index f3e493a..d167861 100644
+--- a/src/shell.rs
++++ b/src/shell.rs
+@@ -64,7 +64,7 @@ fn interactive() -> i32 {
+     let _ = editor.set_max_history_size(HISTORY_LIMIT);
+     let _ = editor.load_history(&history_file);
+ 
+-    println!("{}", ui::BANNER);
++    ui::print_banner();
+     println!();
+ 
+     loop {
+diff --git a/src/ui.rs b/src/ui.rs
+index 91383d2..3cc44f3 100644
+--- a/src/ui.rs
++++ b/src/ui.rs
+@@ -4,6 +4,10 @@ use std::fs;
+ pub const DENY_MSG: &str =
+     "This command is not permitted on the host.\nRun workloads inside an Incus container.";
+ 
++pub const BANNER_BEFORE_PATH: &str = "/etc/incus-only-shell/banner-before.txt";
++pub const BANNER_AFTER_PATH: &str = "/etc/incus-only-shell/banner-after.txt";
++pub const VERSION: &str = env!("CARGO_PKG_VERSION");
++
+ pub const BANNER: &str = r#"This host shell is restricted.
+ 
+ Use this shell primarily for Incus commands.
+@@ -47,6 +51,10 @@ GPU PCI address example:
+ Incus:
+   incus ...
+ 
++Shell:
++  shell-version
++      Show the incus-only-shell version.
++
+ Host shell:
+   bash
+       Start an unrestricted Bash shell on the host.
+@@ -86,6 +94,28 @@ pub fn deny() {
+     eprintln!("{DENY_MSG}");
+ }
+ 
++pub fn print_banner() {
++    print_optional_file(BANNER_BEFORE_PATH);
++    println!("{BANNER}");
++    print_optional_file(BANNER_AFTER_PATH);
++}
++
++fn print_optional_file(path: &str) {
++    let Ok(contents) = fs::read_to_string(path) else {
++        return;
++    };
++
++    if contents.is_empty() {
++        return;
++    }
++
++    print!("{contents}");
++
++    if !contents.ends_with('\n') {
++        println!();
++    }
++}
++
+ pub fn hostname() -> String {
+     fs::read_to_string("/proc/sys/kernel/hostname")
+         .unwrap_or_else(|_| "host".into())
+@@ -99,5 +129,5 @@ pub fn prompt() -> String {
+         .map(|path| path.display().to_string())
+         .unwrap_or_else(|_| "?".into());
+ 
+-    format!("[incus-shell] {user}@{}:{cwd}$ ", hostname())
++    format!("[incus-only-shell] {user}@{}:{cwd}$ ", hostname())
+ }
+diff --git a/tests/behavior.rs b/tests/behavior.rs
+index 0a975d9..cc9c8f0 100644
+--- a/tests/behavior.rs
++++ b/tests/behavior.rs
+@@ -32,7 +32,7 @@ fn multiple_commands_execute_in_order_without_intermediate_prompt() {
+     assert_eq!(lines.len(), 3);
+     assert_eq!(lines[0], lines[1]);
+     assert_eq!(lines[1], lines[2]);
+-    assert!(!stdout.contains("[incus-shell]"));
++    assert!(!stdout.contains("[incus-only-shell]"));
+ }
+ 
+ #[test]
+@@ -119,3 +119,25 @@ fn single_ampersand_is_denied() {
+     assert_eq!(output.status.code(), Some(126));
+     assert!(output.stdout.is_empty());
+ }
++
++#[test]
++fn shell_version_is_available() {
++    let output = run_stdin("shell-version\n");
++
++    assert!(output.status.success());
++    assert_eq!(
++        String::from_utf8(output.stdout).unwrap(),
++        format!("incus-only-shell {}\n", env!("CARGO_PKG_VERSION"))
++    );
++}
++
++#[test]
++fn shell_version_rejects_arguments() {
++    let output = run_stdin("shell-version extra\n");
++
++    assert_eq!(output.status.code(), Some(2));
++    assert!(output.stdout.is_empty());
++    assert!(String::from_utf8(output.stderr)
++        .unwrap()
++        .contains("shell-version: no arguments expected"));
++}

@@ -64,7 +64,7 @@ fn interactive() -> i32 {
     let _ = editor.set_max_history_size(HISTORY_LIMIT);
     let _ = editor.load_history(&history_file);
 
-    println!("{}", ui::BANNER);
+    ui::print_banner();
     println!();
 
     loop {
