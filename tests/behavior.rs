@@ -77,3 +77,45 @@ fn arbitrary_pipeline_is_denied() {
 
     assert_eq!(output.status.code(), Some(126));
 }
+
+#[test]
+fn double_ampersand_runs_next_command_on_success() {
+    let output = run_stdin("pwd && pwd\n");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0], lines[1]);
+}
+
+#[test]
+fn double_ampersand_short_circuits_on_failure() {
+    let output = run_stdin("grep definitely-not-present /dev/null && pwd\n");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn double_ampersand_can_continue_on_next_line() {
+    let output = run_stdin("pwd &&\npwd\n");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0], lines[1]);
+}
+
+#[test]
+fn single_ampersand_is_denied() {
+    let output = run_stdin("pwd & pwd\n");
+
+    assert_eq!(output.status.code(), Some(126));
+    assert!(output.stdout.is_empty());
+}

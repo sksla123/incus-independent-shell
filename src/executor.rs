@@ -27,18 +27,37 @@ pub fn run_input(input: &str, history: &[String]) -> Flow {
     let mut last = 0;
 
     for expr in expressions {
-        match expr {
-            Expr::Simple(command) => match run_simple(&command, history) {
-                Flow::Continue(rc) => last = rc,
-                Flow::Exit(rc) => return Flow::Exit(rc),
-            },
-            Expr::Pipeline { left, right } => {
-                last = run_pipeline(&left, &right);
-            }
+        match run_expr(expr, history) {
+            Flow::Continue(rc) => last = rc,
+            Flow::Exit(rc) => return Flow::Exit(rc),
         }
     }
 
     Flow::Continue(last)
+}
+
+fn run_expr(expr: Expr, history: &[String]) -> Flow {
+    match expr {
+        Expr::Simple(command) => run_simple(&command, history),
+        Expr::Pipeline { left, right } => Flow::Continue(run_pipeline(&left, &right)),
+        Expr::AndChain(chain) => {
+            let mut last = 0;
+
+            for expr in chain {
+                match run_expr(expr, history) {
+                    Flow::Continue(rc) => {
+                        last = rc;
+                        if rc != 0 {
+                            break;
+                        }
+                    }
+                    Flow::Exit(rc) => return Flow::Exit(rc),
+                }
+            }
+
+            Flow::Continue(last)
+        }
+    }
 }
 
 fn run_simple(input: &str, history: &[String]) -> Flow {

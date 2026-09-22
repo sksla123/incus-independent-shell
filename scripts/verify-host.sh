@@ -35,5 +35,6 @@ ls -lh target/release/incus-only-shell
 printf '%s\n' '== non-interactive smoke tests =='
 printf 'pwd\npwd\npwd\n' | target/release/incus-only-shell
 printf 'ls \\\n-d \\\n.\n' | target/release/incus-only-shell
+printf 'pwd && pwd\n' | target/release/incus-only-shell
 
 printf '%s\n' 'verification completed'

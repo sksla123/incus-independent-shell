@@ -2,6 +2,7 @@
 pub enum Expr {
     Simple(String),
     Pipeline { left: String, right: String },
+    AndChain(Vec<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,8 +26,10 @@ pub fn parse_structure(input: &str) -> Result<Vec<Expr>, ParseError> {
     let mut state = QuoteState::Plain;
     let mut chars = input.chars().peekable();
     let mut out = Vec::new();
+    let mut and_chain = Vec::new();
     let mut current = String::new();
     let mut pipe_left: Option<String> = None;
+    let mut awaiting_and_rhs = false;
 
     while let Some(ch) = chars.next() {
         match state {
@@ -34,10 +37,12 @@ pub fn parse_structure(input: &str) -> Result<Vec<Expr>, ParseError> {
                 '\'' => {
                     current.push(ch);
                     state = QuoteState::Single;
+                    awaiting_and_rhs = false;
                 }
                 '"' => {
                     current.push(ch);
                     state = QuoteState::Double;
+                    awaiting_and_rhs = false;
                 }
                 '\\' => match chars.next() {
                     Some('\n') => {
@@ -46,21 +51,47 @@ pub fn parse_structure(input: &str) -> Result<Vec<Expr>, ParseError> {
                     Some(next) => {
                         current.push('\\');
                         current.push(next);
+                        awaiting_and_rhs = false;
                     }
                     None => return Err(ParseError::Incomplete),
                 },
-                '\n' => finish_expr(&mut out, &mut pipe_left, &mut current)?,
+                '\n' => {
+                    if awaiting_and_rhs {
+                        continue;
+                    }
+
+                    finish_command(&mut and_chain, &mut pipe_left, &mut current, false)?;
+                    finish_statement(&mut out, &mut and_chain);
+                }
                 '|' => {
-                    if pipe_left.is_some() || current.trim().is_empty() {
+                    if awaiting_and_rhs || pipe_left.is_some() || current.trim().is_empty() {
                         return Err(ParseError::Denied);
                     }
 
                     pipe_left = Some(current.trim().to_string());
                     current.clear();
                 }
-                ';' | '&' | '<' | '>' | '`' => return Err(ParseError::Denied),
+                '&' => {
+                    if chars.peek() != Some(&'&') {
+                        return Err(ParseError::Denied);
+                    }
+                    chars.next();
+
+                    if awaiting_and_rhs {
+                        return Err(ParseError::Denied);
+                    }
+
+                    finish_command(&mut and_chain, &mut pipe_left, &mut current, true)?;
+                    awaiting_and_rhs = true;
+                }
+                ';' | '<' | '>' | '`' => return Err(ParseError::Denied),
                 '\r' => {}
-                _ => current.push(ch),
+                _ => {
+                    if !ch.is_whitespace() {
+                        awaiting_and_rhs = false;
+                    }
+                    current.push(ch);
+                }
             },
 
             QuoteState::Single => {
@@ -90,18 +121,20 @@ pub fn parse_structure(input: &str) -> Result<Vec<Expr>, ParseError> {
         }
     }
 
-    if state != QuoteState::Plain {
+    if state != QuoteState::Plain || awaiting_and_rhs {
         return Err(ParseError::Incomplete);
     }
 
-    finish_expr(&mut out, &mut pipe_left, &mut current)?;
+    finish_command(&mut and_chain, &mut pipe_left, &mut current, false)?;
+    finish_statement(&mut out, &mut and_chain);
     Ok(out)
 }
 
-fn finish_expr(
-    out: &mut Vec<Expr>,
+fn finish_command(
+    and_chain: &mut Vec<Expr>,
     pipe_left: &mut Option<String>,
     current: &mut String,
+    required: bool,
 ) -> Result<(), ParseError> {
     let right = current.trim();
 
@@ -110,16 +143,26 @@ fn finish_expr(
             return Err(ParseError::Denied);
         }
 
-        out.push(Expr::Pipeline {
+        and_chain.push(Expr::Pipeline {
             left,
             right: right.to_string(),
         });
     } else if !right.is_empty() {
-        out.push(Expr::Simple(right.to_string()));
+        and_chain.push(Expr::Simple(right.to_string()));
+    } else if required {
+        return Err(ParseError::Denied);
     }
 
     current.clear();
     Ok(())
+}
+
+fn finish_statement(out: &mut Vec<Expr>, and_chain: &mut Vec<Expr>) {
+    match and_chain.len() {
+        0 => {}
+        1 => out.push(and_chain.pop().expect("single expression missing")),
+        _ => out.push(Expr::AndChain(std::mem::take(and_chain))),
+    }
 }
 
 #[cfg(test)]
@@ -195,6 +238,15 @@ mod tests {
     }
 
     #[test]
+    fn quoted_double_ampersand_is_literal() {
+        let input = "incus exec c1 -- sh -c 'echo a && echo b'";
+        assert_eq!(
+            parse_structure(input).unwrap(),
+            vec![Expr::Simple(input.into())]
+        );
+    }
+
+    #[test]
     fn one_top_level_pipeline_is_allowed() {
         assert_eq!(
             parse_structure("incus list | grep c1").unwrap(),
@@ -214,10 +266,72 @@ mod tests {
     }
 
     #[test]
+    fn double_ampersand_builds_and_chain() {
+        assert_eq!(
+            parse_structure("incus stop c1 && incus start c1").unwrap(),
+            vec![Expr::AndChain(vec![
+                Expr::Simple("incus stop c1".into()),
+                Expr::Simple("incus start c1".into()),
+            ])]
+        );
+    }
+
+    #[test]
+    fn multiple_double_ampersands_build_one_chain() {
+        assert_eq!(
+            parse_structure("pwd && incus list && incus project list").unwrap(),
+            vec![Expr::AndChain(vec![
+                Expr::Simple("pwd".into()),
+                Expr::Simple("incus list".into()),
+                Expr::Simple("incus project list".into()),
+            ])]
+        );
+    }
+
+    #[test]
+    fn pipeline_can_participate_in_and_chain() {
+        assert_eq!(
+            parse_structure("incus list | grep c1 && incus info c1").unwrap(),
+            vec![Expr::AndChain(vec![
+                Expr::Pipeline {
+                    left: "incus list".into(),
+                    right: "grep c1".into(),
+                },
+                Expr::Simple("incus info c1".into()),
+            ])]
+        );
+    }
+
+    #[test]
+    fn newline_after_double_ampersand_continues_chain() {
+        assert_eq!(
+            parse_structure("incus stop c1 &&\nincus start c1").unwrap(),
+            vec![Expr::AndChain(vec![
+                Expr::Simple("incus stop c1".into()),
+                Expr::Simple("incus start c1".into()),
+            ])]
+        );
+    }
+
+    #[test]
+    fn trailing_double_ampersand_is_incomplete() {
+        assert_eq!(
+            parse_structure("incus stop c1 &&"),
+            Err(ParseError::Incomplete)
+        );
+    }
+
+    #[test]
+    fn single_ampersand_is_denied() {
+        for input in ["incus list &", "incus list & id", "incus list &&& id"] {
+            assert_eq!(parse_structure(input), Err(ParseError::Denied));
+        }
+    }
+
+    #[test]
     fn shell_operators_are_denied() {
         for input in [
             "incus list; id",
-            "incus list && id",
             "incus list > /tmp/x",
             "incus list < /tmp/x",
             "`id`",

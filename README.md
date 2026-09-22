@@ -33,7 +33,9 @@ This allows Cargo to select the current compatible release in each major series 
   - Normal newline outside quotes = separate command.
   - `\\` + newline = continuation of the same command.
   - Newline inside `'...'` or `"..."` remains inside that argument.
-  - One top-level pipeline is allowed only when the final command is `grep`.
+  - One top-level pipeline per command is allowed only when the final command is `grep`.
+  - `&&` conditionally runs the next command only when the previous command succeeds.
+  - A trailing `&&` continues input onto the next line.
   - Shell-style word splitting is delegated to `shlex`.
 
 - `src/policy.rs`
@@ -44,6 +46,8 @@ This allows Cargo to select the current compatible release in each major series 
   - Built-ins: `cd`, `history`, `help`, `exit`.
   - Executes commands directly with `std::process::Command`.
   - Independent commands are never combined into an implicit `sh -c` or `bash -c` invocation.
+  - `&&` chains are evaluated by the wrapper itself using child-process exit codes.
+  - Each command in an `&&` chain is classified and executed separately.
   - A shell is invoked only when the user explicitly requests `bash`, or when a command such as `incus exec ... -- sh -c ...` is passed to Incus.
 
 - `src/shell.rs`
@@ -109,6 +113,21 @@ incus list | grep c1
 
 creates two processes directly and connects stdout to stdin.
 It is not converted to `sh -c 'incus list | grep c1'`.
+
+### Conditional AND
+
+```bash
+incus stop c1 && incus start c1
+```
+
+The wrapper executes `incus stop c1` first. `incus start c1` runs only when the first command exits with status `0`. Each command is parsed, policy-checked, and executed separately.
+
+A trailing `&&` continues onto the next input line:
+
+```bash
+incus stop c1 &&
+incus start c1
+```
 
 ## Rust environment
 

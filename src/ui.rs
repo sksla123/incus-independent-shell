@@ -57,7 +57,9 @@ Parsing rules:
 
   A newline inside single or double quotes remains inside the argument.
 
-  One top-level pipeline is allowed only when the final command is grep.
+  One top-level pipeline per command is allowed only when the final command is grep.
+
+  && runs the next command only when the previous command succeeds.
 
 Examples:
   incus list
@@ -73,6 +75,8 @@ Examples:
   '
 
   incus exec c1 -- sshd -T | grep passwordauthentication
+
+  incus stop c1 && incus start c1
 
   lspci -Dnnk | grep -EA3 'VGA|3D|Display'
 "#;

@@ -56,6 +56,11 @@ mod tests {
     }
 
     #[test]
+    fn trailing_double_ampersand_requests_more_input() {
+        assert!(is_incomplete("incus stop c1 &&"));
+    }
+
+    #[test]
     fn independent_complete_commands_do_not_request_more_input() {
         assert!(!is_incomplete("incus list\nincus info\nincus project list"));
     }
