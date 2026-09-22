@@ -95,20 +95,8 @@ fn spec(program: &str, args: &[String]) -> CommandSpec {
 fn ip_allowed(args: &[String]) -> bool {
     const OBJECTS: &[&str] = &["addr", "address", "link", "route", "neigh", "neighbor"];
     const MUTATING: &[&str] = &[
-        "add",
-        "del",
-        "delete",
-        "change",
-        "replace",
-        "set",
-        "flush",
-        "append",
-        "prepend",
-        "batch",
-        "-batch",
-        "--batch",
-        "netns",
-        "exec",
+        "add", "del", "delete", "change", "replace", "set", "flush", "append", "prepend", "batch",
+        "-batch", "--batch", "netns", "exec",
     ];
 
     if args.iter().any(|arg| MUTATING.contains(&arg.as_str())) {
@@ -123,8 +111,7 @@ fn hostname_allowed(args: &[String]) -> bool {
         [] => true,
         [arg] => matches!(
             arg.as_str(),
-            "-s"
-                | "--short"
+            "-s" | "--short"
                 | "-f"
                 | "--fqdn"
                 | "-d"

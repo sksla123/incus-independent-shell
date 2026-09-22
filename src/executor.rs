@@ -111,9 +111,7 @@ fn run_history(args: &[String], history: &[String]) -> Flow {
         }
     };
 
-    let start = count
-        .map(|n| history.len().saturating_sub(n))
-        .unwrap_or(0);
+    let start = count.map(|n| history.len().saturating_sub(n)).unwrap_or(0);
 
     for (index, entry) in history.iter().enumerate().skip(start) {
         let rendered = entry.replace('\n', "\n        ");

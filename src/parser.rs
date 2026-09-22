@@ -183,8 +183,7 @@ mod tests {
     #[test]
     fn backslash_newline_continues_command() {
         assert_eq!(
-            parse_structure("incus launch \\\n  images:debian/13/cloud \\\n  c1")
-            .unwrap(),
+            parse_structure("incus launch \\\n  images:debian/13/cloud \\\n  c1").unwrap(),
             vec![Expr::Simple(
                 "incus launch   images:debian/13/cloud   c1".into()
             )]

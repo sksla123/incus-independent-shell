@@ -1,7 +1,8 @@
 use std::env;
 use std::fs;
 
-pub const DENY_MSG: &str = "This command is not permitted on the host.\nRun workloads inside an Incus container.";
+pub const DENY_MSG: &str =
+    "This command is not permitted on the host.\nRun workloads inside an Incus container.";
 
 pub const BANNER: &str = r#"This host shell is restricted.
 

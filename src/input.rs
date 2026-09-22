@@ -21,10 +21,7 @@ impl Highlighter for ShellHelper {}
 impl Helper for ShellHelper {}
 
 impl Validator for ShellHelper {
-    fn validate(
-        &self,
-        ctx: &mut ValidationContext<'_>,
-    ) -> rustyline::Result<ValidationResult> {
+    fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
         match parse_structure(ctx.input()) {
             Err(ParseError::Incomplete) => Ok(ValidationResult::Incomplete),
             _ => Ok(ValidationResult::Valid(None)),
