@@ -1,25 +1,37 @@
 #!/bin/sh
+
+# This script must be executed, not sourced.
+# When sourced from Bash, return before enabling `set -e` so the login shell
+# is not terminated by a later verification failure.
+if [ -n "${BASH_VERSION:-}" ] && [ "${BASH_SOURCE:-}" != "$0" ]; then
+    printf '%s\n' 'Run this script with: ./scripts/verify-host.sh' >&2
+    return 2
+fi
+
 set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+cd "$REPO_ROOT"
+
+BIN='target/release/incus-only-shell'
 
 printf '%s\n' '== Rust environment =='
 rustc --version --verbose
 cargo --version
+
 if command -v rustup >/dev/null 2>&1; then
     rustup show active-toolchain || true
 fi
 
 if cargo fmt --version >/dev/null 2>&1; then
     printf '%s\n' '== formatting =='
-    cargo fmt -- --check
-else
-    printf '%s\n' '== formatting: skipped (rustfmt not installed) =='
+    cargo fmt --all -- --check
 fi
 
 if cargo clippy --version >/dev/null 2>&1; then
     printf '%s\n' '== clippy =='
     cargo clippy --all-targets -- -D warnings
-else
-    printf '%s\n' '== clippy: skipped (clippy not installed) =='
 fi
 
 printf '%s\n' '== tests =='
@@ -29,12 +41,13 @@ printf '%s\n' '== release build =='
 cargo build --release
 
 printf '%s\n' '== binary =='
-file target/release/incus-only-shell
-ls -lh target/release/incus-only-shell
+test -f "$BIN"
+test -x "$BIN"
+ls -lh "$BIN"
 
 printf '%s\n' '== non-interactive smoke tests =='
-printf 'pwd\npwd\npwd\n' | target/release/incus-only-shell
-printf 'ls \\\n-d \\\n.\n' | target/release/incus-only-shell
-printf 'pwd && pwd\n' | target/release/incus-only-shell
+printf 'pwd\npwd\npwd\n' | "$BIN"
+printf 'ls \\\n-d \\\n.\n' | "$BIN"
+printf 'pwd && pwd\n' | "$BIN"
 
 printf '%s\n' 'verification completed'
