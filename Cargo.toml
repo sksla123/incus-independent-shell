@@ -1,0 +1,8 @@
+[package]
+name = "incus-only-shell"
+version = "4.2.0"
+edition = "2021"
+
+[dependencies]
+rustyline = { version = "18", default-features = false, features = ["with-file-history"] }
+shlex = "2"
