@@ -1,3 +1,4 @@
+use crate::config::ShellConfig;
 use crate::executor::{self, Flow};
 use crate::input::ShellHelper;
 use crate::ui;
@@ -28,7 +29,11 @@ pub fn run() -> i32 {
             return 126;
         }
 
-        return non_interactive(&args[2]);
+        let config = match load_config() {
+            Ok(config) => config,
+            Err(rc) => return rc,
+        };
+        return non_interactive(&args[2], &config);
     }
 
     if args.len() != 1 {
@@ -36,19 +41,31 @@ pub fn run() -> i32 {
         return 126;
     }
 
+    let config = match load_config() {
+        Ok(config) => config,
+        Err(rc) => return rc,
+    };
+
     if io::stdin().is_terminal() {
-        interactive()
+        interactive(&config)
     } else {
         let mut input = String::new();
         if io::stdin().read_to_string(&mut input).is_err() {
             return 1;
         }
 
-        non_interactive(&input)
+        non_interactive(&input, &config)
     }
 }
 
-fn interactive() -> i32 {
+fn load_config() -> Result<ShellConfig, i32> {
+    ShellConfig::load().map_err(|err| {
+        eprintln!("incus-only-shell: configuration error: {err}");
+        126
+    })
+}
+
+fn interactive(config: &ShellConfig) -> i32 {
     let history_file = history_path();
     prepare_history_file(&history_file);
 
@@ -64,7 +81,7 @@ fn interactive() -> i32 {
     let _ = editor.set_max_history_size(HISTORY_LIMIT);
     let _ = editor.load_history(&history_file);
 
-    ui::print_banner();
+    ui::print_banner(&config.banner);
     println!();
 
     loop {
@@ -90,15 +107,15 @@ fn interactive() -> i32 {
 
         let history: Vec<String> = editor.history().iter().cloned().collect();
 
-        match executor::run_input(&input, &history) {
+        match executor::run_input(&input, &history, &config.allowed_commands) {
             Flow::Continue(_) => {}
             Flow::Exit(rc) => return rc,
         }
     }
 }
 
-fn non_interactive(input: &str) -> i32 {
-    match executor::run_input(input, &[]) {
+fn non_interactive(input: &str, config: &ShellConfig) -> i32 {
+    match executor::run_input(input, &[], &config.allowed_commands) {
         Flow::Continue(rc) | Flow::Exit(rc) => rc,
     }
 }

@@ -1,3 +1,4 @@
+mod config;
 mod executor;
 mod input;
 mod parser;

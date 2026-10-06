@@ -1,0 +1,11 @@
+This host shell is restricted.
+
+Use this shell primarily for Incus commands.
+Do not run workloads or perform system administration on the host.
+
+Run applications and arbitrary commands inside your Incus containers.
+
+The "bash" command is available when you explicitly need a normal host shell.
+Commands executed inside bash are not filtered by this wrapper.
+
+Type "help" to see available commands.

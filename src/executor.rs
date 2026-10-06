@@ -1,17 +1,18 @@
 use crate::parser::{parse_structure, split_words, Expr, ParseError};
-use crate::policy::{classify, CommandSpec};
+use crate::policy::{classify, AllowedCommands, CommandSpec};
 use crate::ui;
 
 use std::env;
 use std::io;
 use std::process::{Command, ExitStatus, Stdio};
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum Flow {
     Continue(i32),
     Exit(i32),
 }
 
-pub fn run_input(input: &str, history: &[String]) -> Flow {
+pub fn run_input(input: &str, history: &[String], allowed: &AllowedCommands) -> Flow {
     let expressions = match parse_structure(input) {
         Ok(exprs) => exprs,
         Err(ParseError::Incomplete) => {
@@ -27,7 +28,7 @@ pub fn run_input(input: &str, history: &[String]) -> Flow {
     let mut last = 0;
 
     for expr in expressions {
-        match run_expr(expr, history) {
+        match run_expr(expr, history, allowed) {
             Flow::Continue(rc) => last = rc,
             Flow::Exit(rc) => return Flow::Exit(rc),
         }
@@ -36,15 +37,15 @@ pub fn run_input(input: &str, history: &[String]) -> Flow {
     Flow::Continue(last)
 }
 
-fn run_expr(expr: Expr, history: &[String]) -> Flow {
+fn run_expr(expr: Expr, history: &[String], allowed: &AllowedCommands) -> Flow {
     match expr {
-        Expr::Simple(command) => run_simple(&command, history),
-        Expr::Pipeline { left, right } => Flow::Continue(run_pipeline(&left, &right)),
+        Expr::Simple(command) => run_simple(&command, history, allowed),
+        Expr::Pipeline { left, right } => Flow::Continue(run_pipeline(&left, &right, allowed)),
         Expr::AndChain(chain) => {
             let mut last = 0;
 
             for expr in chain {
-                match run_expr(expr, history) {
+                match run_expr(expr, history, allowed) {
                     Flow::Continue(rc) => {
                         last = rc;
                         if rc != 0 {
@@ -60,7 +61,7 @@ fn run_expr(expr: Expr, history: &[String]) -> Flow {
     }
 }
 
-fn run_simple(input: &str, history: &[String]) -> Flow {
+fn run_simple(input: &str, history: &[String], allowed: &AllowedCommands) -> Flow {
     let argv = match split_words(input) {
         Ok(argv) => argv,
         Err(_) => {
@@ -77,8 +78,7 @@ fn run_simple(input: &str, history: &[String]) -> Flow {
         "exit" | "logout" => Flow::Exit(0),
 
         "help" => {
-            let _ = Command::new("incus").arg("--help").status();
-            println!("{}", ui::HELP);
+            ui::print_help(allowed);
             Flow::Continue(0)
         }
 
@@ -95,7 +95,7 @@ fn run_simple(input: &str, history: &[String]) -> Flow {
         "history" => run_history(&argv[1..], history),
         "cd" => run_cd(&argv[1..]),
 
-        _ => match classify(&argv, true) {
+        _ => match classify(&argv, allowed) {
             Ok(spec) => Flow::Continue(run_external(spec)),
             Err(_) => {
                 ui::deny();
@@ -152,14 +152,6 @@ fn run_cd(args: &[String]) -> Flow {
 }
 
 fn run_external(spec: CommandSpec) -> i32 {
-    if spec.warn_unrestricted_bash {
-        eprintln!(
-            "\nWARNING: Entering an unrestricted Bash shell on the host.\n\
-Commands in this Bash session are NOT filtered by incus-only-shell.\n\
-Type \"exit\" to return to incus-only-shell.\n"
-        );
-    }
-
     match make_command(&spec).status() {
         Ok(status) => status_code(status),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -173,7 +165,7 @@ Type \"exit\" to return to incus-only-shell.\n"
     }
 }
 
-fn run_pipeline(left: &str, right: &str) -> i32 {
+fn run_pipeline(left: &str, right: &str, allowed: &AllowedCommands) -> i32 {
     let left_argv = match split_words(left) {
         Ok(argv) => argv,
         Err(_) => return 2,
@@ -184,13 +176,15 @@ fn run_pipeline(left: &str, right: &str) -> i32 {
         Err(_) => return 2,
     };
 
-    if right_argv.first().map(String::as_str) != Some("grep") {
-        ui::deny();
-        return 126;
-    }
+    let right_spec = match classify(&right_argv, allowed) {
+        Ok(spec) => spec,
+        Err(_) => {
+            ui::deny();
+            return 126;
+        }
+    };
 
-    // Built-ins and unrestricted Bash do not participate in filtered pipelines.
-    let left_spec = match classify(&left_argv, false) {
+    let left_spec = match classify(&left_argv, allowed) {
         Ok(spec) => spec,
         Err(_) => {
             ui::deny();
@@ -217,21 +211,20 @@ fn run_pipeline(left: &str, right: &str) -> i32 {
         return 126;
     };
 
-    let grep_status = Command::new("grep")
-        .args(&right_argv[1..])
+    let right_status = make_command(&right_spec)
         .stdin(Stdio::from(stdout))
         .status();
 
     let _ = left_child.wait();
 
-    match grep_status {
+    match right_status {
         Ok(status) => status_code(status),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            eprintln!("grep: command not installed");
+            eprintln!("{}: command not installed", right_spec.program);
             127
         }
         Err(err) => {
-            eprintln!("grep: {err}");
+            eprintln!("{}: {err}", right_spec.program);
             126
         }
     }
@@ -245,4 +238,59 @@ fn make_command(spec: &CommandSpec) -> Command {
 
 fn status_code(status: ExitStatus) -> i32 {
     status.code().unwrap_or(128)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn always_available_commands_work_with_an_empty_external_list() {
+        let allowed = AllowedCommands::parse("").unwrap();
+        for input in [
+            "cd .",
+            "history",
+            "help",
+            "shell-version",
+            "bash -c 'exit 0'",
+        ] {
+            assert_eq!(run_input(input, &[], &allowed), Flow::Continue(0));
+        }
+        for input in ["exit", "logout"] {
+            assert_eq!(run_input(input, &[], &allowed), Flow::Exit(0));
+        }
+        assert_eq!(run_input("pwd", &[], &allowed), Flow::Continue(126));
+    }
+
+    #[test]
+    fn pipeline_requires_both_external_commands_in_the_list() {
+        for commands in ["pwd\n", "grep\n", ""] {
+            let allowed = AllowedCommands::parse(commands).unwrap();
+            assert_eq!(run_pipeline("pwd", "grep .", &allowed), 126);
+        }
+    }
+
+    #[test]
+    fn bash_is_allowed_in_a_pipeline_without_listing_it() {
+        let allowed = AllowedCommands::parse("grep\n").unwrap();
+        assert_eq!(
+            run_pipeline("bash -c 'printf hello'", "grep hello", &allowed),
+            0
+        );
+    }
+
+    #[test]
+    fn configured_pipeline_target_can_be_any_external_command() {
+        let allowed = AllowedCommands::parse("cat\n").unwrap();
+        assert_eq!(run_pipeline("bash -c 'printf hello'", "cat", &allowed), 0);
+    }
+
+    #[test]
+    fn bash_pipeline_works_with_an_empty_external_list() {
+        let allowed = AllowedCommands::parse("").unwrap();
+        assert_eq!(
+            run_pipeline("bash -c 'printf hello'", "bash -c 'cat'", &allowed),
+            0
+        );
+    }
 }

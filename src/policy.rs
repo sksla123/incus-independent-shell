@@ -1,216 +1,139 @@
-#[derive(Debug, Clone)]
+use std::collections::BTreeSet;
+
+pub const BUILTIN_COMMANDS: &[&str] = &["cd", "history", "help", "shell-version", "exit", "logout"];
+pub const ALWAYS_ALLOWED_EXTERNAL_COMMANDS: &[&str] = &["bash"];
+
+pub struct AllowedCommands {
+    commands: BTreeSet<String>,
+}
+
+impl AllowedCommands {
+    pub fn parse(contents: &str) -> Result<Self, String> {
+        let mut commands = BTreeSet::new();
+
+        for (index, line) in contents.lines().enumerate() {
+            let name = line.split('#').next().unwrap_or("").trim();
+            if name.is_empty() {
+                continue;
+            }
+
+            // The file contains command names, not paths or command lines.
+            if !name.starts_with(|c: char| c.is_ascii_alphanumeric())
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
+            {
+                return Err(format!(
+                    "line {}: expected one command name, got {name:?}",
+                    index + 1
+                ));
+            }
+
+            // Built-ins and the host shell are always available independently of this file.
+            if !BUILTIN_COMMANDS.contains(&name)
+                && !ALWAYS_ALLOWED_EXTERNAL_COMMANDS.contains(&name)
+            {
+                commands.insert(name.to_string());
+            }
+        }
+
+        Ok(Self { commands })
+    }
+
+    pub fn is_allowed(&self, name: &str) -> bool {
+        ALWAYS_ALLOWED_EXTERNAL_COMMANDS.contains(&name) || self.commands.contains(name)
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.commands.iter().map(String::as_str)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
-    pub warn_unrestricted_bash: bool,
 }
 
-const HOST_COMMANDS: &[&str] = &[
-    "ls",
-    "pwd",
-    "clear",
-    "grep",
-    "whoami",
-    "id",
-    "groups",
-    "who",
-    "w",
-    "uptime",
-    "uname",
-    "free",
-    "vmstat",
-    "mpstat",
-    "lscpu",
-    "ps",
-    "ss",
-    "ping",
-    "traceroute",
-    "tracepath",
-    "df",
-    "du",
-    "lsblk",
-    "findmnt",
-    "mountpoint",
-    "blkid",
-    "gpu-stat",
-    "lspci",
-];
-
-pub fn classify(argv: &[String], allow_bash: bool) -> Result<CommandSpec, ()> {
+pub fn classify(argv: &[String], allowed: &AllowedCommands) -> Result<CommandSpec, ()> {
     let cmd = argv.first().ok_or(())?;
-    let args = &argv[1..];
-
-    match cmd.as_str() {
-        "incus" => Ok(spec("incus", args)),
-
-        "bash" if allow_bash => Ok(CommandSpec {
-            program: "/bin/bash".into(),
-            args: args.to_vec(),
-            warn_unrestricted_bash: true,
-        }),
-
-        "ip" if ip_allowed(args) => Ok(spec("ip", args)),
-        "hostname" if hostname_allowed(args) => Ok(spec("hostname", args)),
-        "resolvectl" if resolvectl_allowed(args) => Ok(spec("resolvectl", args)),
-        "nvidia-smi" if nvidia_smi_allowed(args) => Ok(spec("nvidia-smi", args)),
-
-        "top" => {
-            let mut out = vec!["-s".into()];
-            out.extend_from_slice(args);
-            Ok(CommandSpec {
-                program: "top".into(),
-                args: out,
-                warn_unrestricted_bash: false,
-            })
-        }
-
-        "htop" => {
-            let mut out = vec!["--readonly".into()];
-            out.extend_from_slice(args);
-            Ok(CommandSpec {
-                program: "htop".into(),
-                args: out,
-                warn_unrestricted_bash: false,
-            })
-        }
-
-        _ if HOST_COMMANDS.contains(&cmd.as_str()) => Ok(CommandSpec {
-            program: cmd.clone(),
-            args: args.to_vec(),
-            warn_unrestricted_bash: false,
-        }),
-
-        _ => Err(()),
-    }
-}
-
-fn spec(program: &str, args: &[String]) -> CommandSpec {
-    CommandSpec {
-        program: program.into(),
-        args: args.to_vec(),
-        warn_unrestricted_bash: false,
-    }
-}
-
-fn ip_allowed(args: &[String]) -> bool {
-    const OBJECTS: &[&str] = &["addr", "address", "link", "route", "neigh", "neighbor"];
-    const MUTATING: &[&str] = &[
-        "add", "del", "delete", "change", "replace", "set", "flush", "append", "prepend", "batch",
-        "-batch", "--batch", "netns", "exec",
-    ];
-
-    if args.iter().any(|arg| MUTATING.contains(&arg.as_str())) {
-        return false;
+    if !allowed.is_allowed(cmd) {
+        return Err(());
     }
 
-    args.iter().any(|arg| OBJECTS.contains(&arg.as_str()))
-}
-
-fn hostname_allowed(args: &[String]) -> bool {
-    match args {
-        [] => true,
-        [arg] => matches!(
-            arg.as_str(),
-            "-s" | "--short"
-                | "-f"
-                | "--fqdn"
-                | "-d"
-                | "--domain"
-                | "-i"
-                | "--ip-address"
-                | "-I"
-                | "--all-ip-addresses"
-        ),
-        _ => false,
-    }
-}
-
-fn resolvectl_allowed(args: &[String]) -> bool {
-    matches!(
-        args.first().map(String::as_str),
-        None | Some("status" | "query" | "statistics" | "show-server-state")
-    )
-}
-
-fn nvidia_smi_allowed(args: &[String]) -> bool {
-    const DENIED: &[&str] = &[
-        "-pm",
-        "--persistence-mode",
-        "-pl",
-        "--power-limit",
-        "-lgc",
-        "--lock-gpu-clocks",
-        "-lmc",
-        "--lock-memory-clocks",
-        "-ac",
-        "--applications-clocks",
-        "-rac",
-        "--reset-applications-clocks",
-        "-rgc",
-        "--reset-gpu-clocks",
-        "-rmc",
-        "--reset-memory-clocks",
-        "-gom",
-        "--gpu-operation-mode",
-        "-mig",
-        "--mig-mode",
-        "-r",
-        "--gpu-reset",
-    ];
-
-    !args.iter().any(|arg| {
-        DENIED
-            .iter()
-            .any(|denied| arg == denied || arg.starts_with(&format!("{denied}=")))
+    Ok(CommandSpec {
+        program: cmd.clone(),
+        args: argv[1..].to_vec(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_ALLOWED_COMMANDS;
 
     fn argv(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_string()).collect()
     }
 
     #[test]
-    fn lspci_is_allowed() {
-        assert!(classify(&argv(&["lspci", "-Dnnk"]), false).is_ok());
+    fn allowed_commands_receive_all_arguments_unchanged() {
+        let allowed = AllowedCommands::parse(DEFAULT_ALLOWED_COMMANDS).unwrap();
+        for items in [
+            vec!["ip", "link", "set", "eth0", "down"],
+            vec!["hostname", "new-name"],
+            vec!["resolvectl", "dns", "eth0", "1.1.1.1"],
+            vec!["nvidia-smi", "--power-limit=250"],
+            vec!["top", "-p", "123"],
+            vec!["htop", "--sort-key=CPU%"],
+            vec!["bash", "-c", "echo hello"],
+            vec!["incus", "list"],
+        ] {
+            let input = argv(&items);
+            let spec = classify(&input, &allowed).unwrap();
+            assert_eq!(spec.program, input[0]);
+            assert_eq!(spec.args, input[1..]);
+        }
     }
 
     #[test]
-    fn ip_show_is_allowed() {
-        assert!(classify(&argv(&["ip", "-br", "addr"]), false).is_ok());
+    fn custom_list_can_add_and_remove_commands() {
+        let defaults = AllowedCommands::parse(DEFAULT_ALLOWED_COMMANDS).unwrap();
+        let custom = AllowedCommands::parse("cp\n").unwrap();
+        assert!(classify(&argv(&["cp", "-r", "source", "dest"]), &defaults).is_err());
+        assert!(classify(&argv(&["cp", "-r", "source", "dest"]), &custom).is_ok());
+        assert!(classify(&argv(&["incus", "list"]), &custom).is_err());
     }
 
     #[test]
-    fn ip_mutation_is_denied() {
-        assert!(classify(&argv(&["ip", "link", "set", "eth0", "down"]), false).is_err());
+    fn comments_and_duplicate_names_are_supported() {
+        let allowed = AllowedCommands::parse("# List\r\npwd # comment\r\n\r\npwd\n").unwrap();
+        assert_eq!(allowed.names().collect::<Vec<_>>(), vec!["pwd"]);
     }
 
     #[test]
-    fn hostname_change_is_denied() {
-        assert!(classify(&argv(&["hostname", "new-name"]), false).is_err());
+    fn paths_and_command_lines_are_not_command_names() {
+        for input in ["/bin/bash", "./pwd", "ip addr", "pwd;ls", "..", "-option"] {
+            assert!(AllowedCommands::parse(input).is_err(), "{input}");
+        }
     }
 
     #[test]
-    fn nvidia_read_is_allowed() {
-        assert!(classify(&argv(&["nvidia-smi", "-L"]), false).is_ok());
+    fn builtins_are_separate_from_external_commands() {
+        let allowed = AllowedCommands::parse("cd\nexit\npwd\n").unwrap();
+        assert_eq!(allowed.names().collect::<Vec<_>>(), vec!["pwd"]);
+        assert!(classify(&argv(&["cd"]), &allowed).is_err());
     }
 
     #[test]
-    fn nvidia_mutation_is_denied() {
-        assert!(classify(&argv(&["nvidia-smi", "-pl", "250"]), false).is_err());
-    }
-
-    #[test]
-    fn nvidia_mutation_with_equals_is_denied() {
-        assert!(classify(&argv(&["nvidia-smi", "--power-limit=250"]), false).is_err());
-    }
-
-    #[test]
-    fn bash_requires_explicit_permission() {
-        assert!(classify(&argv(&["bash"]), false).is_err());
-        assert!(classify(&argv(&["bash"]), true).is_ok());
+    fn bash_is_always_allowed_and_ignored_in_the_configured_list() {
+        for contents in ["", "cp\n", "bash\n"] {
+            let allowed = AllowedCommands::parse(contents).unwrap();
+            let input = argv(&["bash", "-c", "echo hello"]);
+            let spec = classify(&input, &allowed).unwrap();
+            assert_eq!(spec.program, "bash");
+            assert_eq!(spec.args, input[1..]);
+            assert!(!allowed.names().any(|name| name == "bash"));
+        }
     }
 }

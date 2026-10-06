@@ -1,3 +1,5 @@
+use crate::policy::{AllowedCommands, ALWAYS_ALLOWED_EXTERNAL_COMMANDS, BUILTIN_COMMANDS};
+
 use std::env;
 use std::fs;
 
@@ -8,95 +10,45 @@ pub const BANNER_BEFORE_PATH: &str = "/etc/incus-only-shell/banner-before.txt";
 pub const BANNER_AFTER_PATH: &str = "/etc/incus-only-shell/banner-after.txt";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const BANNER: &str = r#"This host shell is restricted.
-
-Use this shell primarily for Incus commands.
-Do not run workloads or perform system administration on the host.
-
-Run applications and arbitrary commands inside your Incus containers.
-
-The "bash" command is available when you explicitly need a normal host shell.
-Commands executed inside bash are not filtered by this wrapper.
-
-Type "help" to see available commands."#;
-
-pub const HELP: &str = r#"
-===== Host commands allowed by this shell =====
-
-Navigation:
-  ls cd pwd clear history grep
-
-Identity / session:
-  whoami id groups who w uptime hostname uname
-
-CPU / memory / process monitoring:
-  free vmstat mpstat lscpu ps top htop
-
-Network monitoring:
-  ss ping traceroute tracepath
-  ip addr|address|link|route|neigh
-  resolvectl status|query|statistics
-
-Disk / filesystem monitoring:
-  df du lsblk findmnt mountpoint blkid
-
-GPU monitoring:
-  gpu-stat
-  nvidia-smi
-  lspci
-
-GPU PCI address example:
-  lspci -Dnnk | grep -EA3 'VGA|3D|Display'
-
-Incus:
-  incus ...
-
-Shell:
-  shell-version
-      Show the incus-only-shell version.
-
-Host shell:
-  bash
-      Start an unrestricted Bash shell on the host.
-
-Parsing rules:
-  A normal newline outside quotes separates commands.
-
-  Backslash followed by newline continues the same command.
-
-  A newline inside single or double quotes remains inside the argument.
-
-  One top-level pipeline per command is allowed only when the final command is grep.
-
-  && runs the next command only when the previous command succeeds.
-
-Examples:
-  incus list
-
-  incus launch \
-    images:debian/13/cloud \
-    c1
-
-  incus exec c1 -- sh -c '
-  echo hello
-  id
-  ip route
-  '
-
-  incus exec c1 -- sshd -T | grep passwordauthentication
-
-  incus stop c1 && incus start c1
-
-  lspci -Dnnk | grep -EA3 'VGA|3D|Display'
-"#;
-
 pub fn deny() {
     eprintln!("{DENY_MSG}");
 }
 
-pub fn print_banner() {
+pub fn print_help(allowed: &AllowedCommands) {
+    println!("{}", help_text(allowed));
+}
+
+fn help_text(allowed: &AllowedCommands) -> String {
+    let names = allowed.names().collect::<Vec<_>>();
+    let external = if names.is_empty() {
+        "(none)".to_string()
+    } else {
+        names.join(" ")
+    };
+    let builtins = BUILTIN_COMMANDS.join(" ");
+    let host_shell = ALWAYS_ALLOWED_EXTERNAL_COMMANDS.join(" ");
+
+    format!(
+        r#"
+===== Host commands allowed by this shell =====
+
+External commands (configured):
+  {external}
+
+Built-ins (always available):
+  {builtins}
+
+Host shell (always available):
+  {host_shell}
+
+Working directly on the host is not recommended.
+If you want to work on the host, you can use bash."#
+    )
+}
+
+pub fn print_banner(banner: &str) {
     print_optional_file(BANNER_BEFORE_PATH);
-    println!("{BANNER}");
+    print_text(banner);
     print_optional_file(BANNER_AFTER_PATH);
 }
 
@@ -105,6 +57,10 @@ fn print_optional_file(path: &str) {
         return;
     };
 
+    print_text(&contents);
+}
+
+fn print_text(contents: &str) {
     if contents.is_empty() {
         return;
     }
@@ -130,4 +86,26 @@ pub fn prompt() -> String {
         .unwrap_or_else(|_| "?".into());
 
     format!("[incus-only-shell] {user}@{}:{cwd}$ ", hostname())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_reflects_custom_and_empty_lists_and_always_shows_bash() {
+        for (contents, expected) in [("cp\n", "cp"), ("", "(none)")] {
+            let allowed = AllowedCommands::parse(contents).unwrap();
+            let text = help_text(&allowed);
+            assert!(text.contains(&format!("External commands (configured):\n  {expected}\n")));
+            assert!(text.contains("Host shell (always available):\n  bash\n"));
+            assert!(!text.contains("Parsing rules:"));
+            assert!(!text.contains("Examples"));
+            assert!(!text.contains("Configuration:"));
+            assert!(text.ends_with("If you want to work on the host, you can use bash."));
+            assert!(text.contains(
+                "Built-ins (always available):\n  cd history help shell-version exit logout\n"
+            ));
+        }
+    }
 }

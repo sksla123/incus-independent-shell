@@ -1,0 +1,54 @@
+# One external command name per line. Blank lines and # comments are ignored.
+# This file replaces the default list when installed in /etc/incus-only-shell.
+# Allowed commands receive their arguments unchanged.
+# Built-ins (cd, history, help, shell-version, exit, logout) are always available.
+# Bash is also always allowed by the code and is not controlled by this file.
+
+# Navigation
+ls
+pwd
+clear
+grep
+
+# Identity / session
+whoami
+id
+groups
+who
+w
+uptime
+hostname
+uname
+
+# CPU / memory / process monitoring
+free
+vmstat
+mpstat
+lscpu
+ps
+top
+htop
+
+# Network monitoring
+ss
+ping
+traceroute
+tracepath
+ip
+resolvectl
+
+# Disk / filesystem monitoring
+df
+du
+lsblk
+findmnt
+mountpoint
+blkid
+
+# GPU monitoring
+gpu-stat
+nvidia-smi
+lspci
+
+# Incus
+incus
