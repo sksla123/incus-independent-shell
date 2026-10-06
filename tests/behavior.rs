@@ -157,6 +157,10 @@ fn help_separates_external_commands_from_builtins() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("External commands (configured):"));
+    let stdout = stdout
+        .split_once("===== Host commands allowed by this shell =====")
+        .unwrap()
+        .1;
     assert!(stdout
         .contains("Built-ins (always available):\n  cd history help shell-version exit logout"));
     assert!(stdout.contains("Host shell (always available):\n  bash"));
