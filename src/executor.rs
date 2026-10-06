@@ -78,6 +78,7 @@ fn run_simple(input: &str, history: &[String], allowed: &AllowedCommands) -> Flo
         "exit" | "logout" => Flow::Exit(0),
 
         "help" => {
+            let _ = Command::new("incus").arg("--help").status();
             ui::print_help(allowed);
             Flow::Continue(0)
         }
